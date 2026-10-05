@@ -230,11 +230,17 @@ def get_campaign(
     db.commit()
 
     members = build_members(c, db)
+    is_owner = c.owner_id == current_user.id
+    if not is_owner:
+        # A guest's code is their login: only the GM who hands codes out may see
+        # them, never another member or guest (issue #519).
+        for m in members:
+            if m.get("guest_code"):
+                m["guest_code"] = None
 
     # Only expose resources this member is allowed to see. Leaking gm-only or
     # unshared-private rows here would hand out resource_ids that become
     # download handles on the by-id media/file routes.
-    is_owner = c.owner_id == current_user.id
     all_resources = db.query(CampaignResource).filter_by(campaign_id=campaign_id).all()
     share_map = {}
     for s in (

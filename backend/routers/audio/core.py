@@ -12,7 +12,7 @@ from ...services import bulk_service, tag_service, variants
 from ...auth import require_gm_or_admin, get_current_user, CurrentUser
 from ...indexer import _extract_embedded_art, _find_folder_artwork, archive_ext, archive_mime
 from .._bulk_schemas import BulkAddTags, BulkFolderTags
-from .._media_access import assert_media_access
+from .._media_access import assert_media_access, guest_visible_variants
 from ._schemas import AudioBulkUpdate, AudioUpdate, FolderTagsUpdate
 
 # Map audio extensions to the mimetype the browser <audio> element expects.
@@ -106,6 +106,7 @@ def get_audio(
     folder_path = "/".join(Path(a.relative_path).parts[1:-1])
     folder = db.query(AudioFolder).filter_by(path=folder_path).first()
     variant_parent, siblings = variants.family_for(db, Audio, a)
+    siblings = guest_visible_variants(db, current_user, "audio", a.id, siblings)
     return {
         **_serialize(a, tags=tag_service.display_tags_for_resource(db, "audio", a.id)),
         "folder_path": folder_path,

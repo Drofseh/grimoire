@@ -19,7 +19,7 @@ from ...file_cache import etag_matches
 from ...auth import require_gm_or_admin, get_current_user, CurrentUser
 from ...indexer import archive_ext, archive_mime, slugify
 from .._bulk_schemas import BulkAddTags, BulkFolderTags
-from .._media_access import assert_media_access
+from .._media_access import assert_media_access, guest_visible_variants
 from .._thumbnails import clear_stale_thumbnail_flag as _clear_stale_thumbnail_flag
 from ._helpers import _allow_explicit
 from ._schemas import FolderTagsUpdate, TokenBulkUpdate, TokenUpdate
@@ -123,6 +123,7 @@ def get_token(
             pixel_width, pixel_height = None, None
 
     variant_parent, siblings = variants.family_for(db, Token, t)
+    siblings = guest_visible_variants(db, current_user, "token", t.id, siblings)
     return {
         "id": t.id,
         "filename": t.filename,

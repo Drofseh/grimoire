@@ -21,7 +21,7 @@ from ...models import Model3D, Model3DFolder
 from ...services import bulk_service, tag_service, variants
 from ...services.content_cache import content_token
 from .._bulk_schemas import BulkAddTags, BulkFolderTags
-from .._media_access import assert_media_access
+from .._media_access import assert_media_access, guest_visible_variants
 from ._helpers import _allow_explicit
 from ._schemas import FolderTagsUpdate, Model3DBulkUpdate, Model3DUpdate
 
@@ -105,6 +105,7 @@ def get_model(
 
     is_archive = bool(archive_ext(m.filename))
     variant_parent, siblings = variants.family_for(db, Model3D, m)
+    siblings = guest_visible_variants(db, current_user, "model", m.id, siblings)
     return {
         "id": m.id,
         "filename": m.filename,

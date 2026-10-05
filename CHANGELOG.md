@@ -20,6 +20,9 @@ Release candidates are omitted; their contents are rolled into the stable releas
 
 - A rescan started from one rescan button now shows as running on every other one on screen at once, instead of up to 30 seconds later
 - Clicking a tag on a book in a game system's book list opens the Tags page filtered to that tag, instead of opening the book
+- Guests now see only what their campaign shares with them (#519). Tags and a tag's items, archive downloads, library stats, system book folders and covers, and the genre, license and similar lists are closed to guests like the rest of the library; a book opened by id shows its details only when it is shared into their campaign; and the other versions listed on a book, map, token, audio or model page, and their favorites, are limited to what is shared with them
+- A campaign's guest invite codes are shown only to its GM, so a guest or player can no longer read another guest's code and sign in as them
+- Copying a blank character sheet is limited to sheets the member can already open, so it can no longer pull any book in the library, or a GM-only campaign file, into a downloadable sheet
 
 ## [1.7.3] - 2026-10-01
 

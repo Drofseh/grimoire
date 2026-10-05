@@ -29,7 +29,7 @@ from ...file_cache import etag_matches
 from ...auth import require_gm_or_admin, get_current_user, CurrentUser
 from ...indexer import MAP_OPAQUE_EXTS, archive_ext, archive_mime, is_vtt_data, slugify
 from .._bulk_schemas import BulkAddTags, BulkFolderTags
-from .._media_access import assert_media_access
+from .._media_access import assert_media_access, guest_visible_variants
 from .._thumbnails import clear_stale_thumbnail_flag as _clear_stale_thumbnail_flag
 from ._helpers import (
     _is_pdf,
@@ -179,6 +179,7 @@ def get_map(
     folder_path = _folder_path(m.relative_path)
     folder = db.query(MapFolder).filter_by(path=folder_path).first()
     variant_parent, siblings = variants.family_for(db, GenericMap, m)
+    siblings = guest_visible_variants(db, current_user, "map", m.id, siblings)
     return {
         "id": m.id,
         "filename": m.filename,

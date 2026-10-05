@@ -692,6 +692,35 @@ def upload_campaign_image(
     }
 
 
+def can_read_campaign_file(db, campaign: Campaign, user_id: str, file_id: str) -> bool:
+    """Whether a campaign member may read one of the campaign's uploaded files.
+
+    The owner reads everything; anyone else is held to the visibility of the
+    resource that links the file in (public, private-and-shared-with-them, or
+    gm). A file with no linking resource is the owner's alone. Callers check
+    campaign membership first.
+    """
+    from ...models import CampaignResource, CampaignResourceShare
+
+    if campaign.owner_id == user_id:
+        return True
+    res = (
+        db.query(CampaignResource)
+        .filter_by(campaign_id=campaign.id, resource_type="file", resource_id=file_id)
+        .first()
+    )
+    if not res or res.visibility == "gm":
+        return False
+    if res.visibility == "private":
+        return (
+            db.query(CampaignResourceShare)
+            .filter_by(resource_id=res.id, user_id=user_id)
+            .first()
+            is not None
+        )
+    return True
+
+
 def get_campaign_file(
     campaign_id: str,
     file_id: str,
@@ -699,7 +728,7 @@ def get_campaign_file(
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    from ...models import CampaignFile, CampaignResource, CampaignResourceShare
+    from ...models import CampaignFile
 
     c = get_campaign_or_404(db, campaign_id)
     if not can_view(c, current_user, db):
@@ -707,24 +736,8 @@ def get_campaign_file(
     cf = db.query(CampaignFile).filter_by(id=file_id, campaign_id=campaign_id).first()
     if not cf:
         raise HTTPException(404, "File not found")
-
-    # Honour the linking resource's visibility for non-owners.
-    if c.owner_id != current_user.id:
-        res = (
-            db.query(CampaignResource)
-            .filter_by(campaign_id=campaign_id, resource_type="file", resource_id=file_id)
-            .first()
-        )
-        if not res or res.visibility == "gm":
-            raise HTTPException(403, "Not authorised")
-        if res.visibility == "private":
-            shared = (
-                db.query(CampaignResourceShare)
-                .filter_by(resource_id=res.id, user_id=current_user.id)
-                .first()
-            )
-            if not shared:
-                raise HTTPException(403, "Not authorised")
+    if not can_read_campaign_file(db, c, current_user.id, file_id):
+        raise HTTPException(403, "Not authorised")
 
     path = os.path.join(_FILES_DIR, cf.stored_path)
     if not os.path.isfile(path):

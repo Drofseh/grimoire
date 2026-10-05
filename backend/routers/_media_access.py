@@ -9,6 +9,8 @@ must authorise the caller itself, exactly as the book content routes do.
 This mirrors `backend.routers.books._helpers._assert_book_access`, generalised
 across media types via the resource-type dispatch in `user_can_access_resource`.
 """
+from typing import Any, Callable, Optional
+
 from fastapi import HTTPException
 
 
@@ -34,6 +36,37 @@ def assert_media_access(db, user, resource_type: str, resource_id: str, *, is_ex
 
     if is_explicit and not _allow_explicit(db, user.id):
         raise HTTPException(403, "Explicit content is disabled for your account")
+
+
+def guest_visible_variants(
+    db: Any,
+    user: Any,
+    resource_type: str,
+    current_id: str,
+    siblings: list[Any],
+    can_read: Optional[Callable[[Any], bool]] = None,
+) -> list[Any]:
+    """Trim a variant family to the members a guest may read (issue #519).
+
+    A detail response lists the whole family for the version picker, and each
+    entry carries a filename. A guest is only entitled to the variants shared
+    into their campaign, so the rest are dropped rather than handing out names
+    and ids of files they cannot open. The requested record itself always stays
+    (its own access was checked before this runs). Non-guests get the family
+    unchanged.
+
+    `can_read` overrides the per-sibling check; books pass one that also applies
+    the access level. By default it is the campaign-share check.
+    """
+    if getattr(user, "role", None) != "guest":
+        return siblings
+    from .campaigns._helpers import user_can_access_resource
+
+    def shared(record: Any) -> bool:
+        return user_can_access_resource(db, user.id, resource_type, record.id)
+
+    check = can_read or shared
+    return [s for s in siblings if s.id == current_id or check(s)]
 
 
 def _allow_explicit(db, user_id: str) -> bool:

@@ -22,9 +22,11 @@ from ...models import Book, GameSystem
 from ...services import access_control, bulk_service, library_fs, tag_service, variants
 from ...services.content_cache import content_token
 from .._bulk_schemas import BulkAddTags
+from .._media_access import guest_visible_variants
 from ._helpers import (
     _allow_explicit,
     _assert_book_access,
+    _can_read_book,
     _enforce_campaign_visibility,
     _invalidate_book_cache,
     pop_access_level,
@@ -125,7 +127,16 @@ def get_book(
         # 404 rather than 403: a restricted book must be indistinguishable from
         # one that does not exist, or probing ids leaks the library's contents.
         raise HTTPException(404, "Book not found")
-    if book.is_explicit and not _allow_explicit(db, current_user.id):
+    if current_user.role == "guest":
+        # A guest reads only books shared into their campaign, at a visibility
+        # that reaches them — the same narrowing the file and page routes apply
+        # (issue #519). 404 for the same reason as above. NSFW isn't filtered
+        # for guests, matching `_assert_book_access`.
+        from ..campaigns._helpers import user_can_access_resource
+
+        if not user_can_access_resource(db, current_user.id, "book", book.id):
+            raise HTTPException(404, "Book not found")
+    elif book.is_explicit and not _allow_explicit(db, current_user.id):
         raise HTTPException(403, "Explicit content is disabled for your account")
     system = (
         db.query(GameSystem).filter_by(id=book.game_system_id).first()
@@ -133,6 +144,14 @@ def get_book(
         else None
     )
     variant_parent, siblings = variants.family_for(db, Book, book)
+    siblings = guest_visible_variants(
+        db,
+        current_user,
+        "book",
+        book.id,
+        siblings,
+        can_read=lambda s: _can_read_book(db, s, current_user),
+    )
     return {
         "id": book.id,
         "title": book.title,

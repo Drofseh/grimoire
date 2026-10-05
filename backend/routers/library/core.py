@@ -16,7 +16,7 @@ from ...config import (
     get_db,
 )
 from ...models import Model3D, GameSystem, Book, GenericMap, Token, Audio
-from ...auth import require_admin, get_current_user, CurrentUser
+from ...auth import require_admin, require_not_guest, get_current_user, CurrentUser
 from ...indexer import resolve_scope
 from ...services import access_control, changelog, variants
 from . import _helpers
@@ -100,12 +100,13 @@ def _book_bytes(db: Session, scope) -> int:
     summary="Library statistics",
     description=(
         "Returns library counts. Accepts a session, or an `X-API-Key` with the "
-        "`stats` permission for external integrations such as Homepage."
+        "`stats` permission for external integrations such as Homepage. "
+        "Guests are refused: the counts describe the whole library."
     ),
     response_model=StatsResponse,
 )
 def get_stats(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_not_guest),
     db: Session = Depends(get_db),
 ):
     # Book counts are scoped to what the caller may actually see (issue #258):

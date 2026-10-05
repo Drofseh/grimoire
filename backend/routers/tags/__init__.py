@@ -1,6 +1,7 @@
 """Tags package — registers the shared-tag routes on a single router (issue #235)."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from ...auth import require_not_guest
 from ._schemas import (
     TagCreatedResponse,
     TagItemsResponse,
@@ -31,8 +32,16 @@ router = APIRouter(prefix="/tags", tags=["tags"])
 # first, while `/merge` is the only POST here (the greedy routes are PATCH and
 # DELETE), so neither is swallowed.
 
+# Reading tags is library browsing: the vocabulary and, through `/items`, every
+# item carrying a tag. Guests are limited to their campaign, so both reads are
+# blocked for them like the other library list routes (issue #519).
 router.add_api_route(
-    "", list_tags, methods=["GET"], summary="List tags", response_model=TagsResponse
+    "",
+    list_tags,
+    methods=["GET"],
+    summary="List tags",
+    response_model=TagsResponse,
+    dependencies=[Depends(require_not_guest)],
 )
 router.add_api_route(
     "",
@@ -48,6 +57,7 @@ router.add_api_route(
     methods=["GET"],
     summary="Items carrying a tag",
     response_model=TagItemsResponse,
+    dependencies=[Depends(require_not_guest)],
 )
 router.add_api_route(
     "/{internal:path}",

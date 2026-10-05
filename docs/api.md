@@ -271,7 +271,7 @@ environment:
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/stats` | GET | any, or an API key with `stats` | Counts, page totals, library size. Tagged `stats` rather than `library`, so a dashboard key needs nothing else. |
+| `/api/stats` | GET | any (not guest), or an API key with `stats` | Counts, page totals, library size. Tagged `stats` rather than `library`, so a dashboard key needs nothing else. |
 | `/api/about` | GET | any | Build info for the About dialog: `{version, commit_hash, python_version}`. Deliberately **not** exposed on `/api/stats`, so a `stats`-only key can't read these details. |
 | `/api/changelog` | GET | any (JWT) | Parsed `CHANGELOG.md` for the About dialog: `{releases: [{version, date, summary, sections: [{title, entries}]}]}`, newest release first. `date` and `summary` are `null` when the release heading carries neither (an `Unreleased` section has no date). `releases` is empty when the image ships without a changelog, which the dialog renders as no changelog section rather than an error. Parsed once and cached for the process lifetime - the file cannot change under a running container. |
 | `/api/latest-release` | GET | any (JWT) | Latest published release for the update-available check: `{latest_version}` (or `null`). Proxies GitHub's releases API server-side (cached ~1h) so the browser makes a same-origin request that request blockers won't block. Returns `null` when `DISABLE_VERSION_CHECKING` is set or GitHub is unreachable. |
@@ -432,11 +432,11 @@ must be non-empty (`422` otherwise).
 | `/api/systems/:id` | PATCH | gm/admin | Update metadata (see fields below) |
 | `/api/systems/bulk` | POST | gm/admin | Bulk update. Body: `{items: [{id, ...PATCH fields}]}`. A name clash fails only that item |
 | `/api/systems/bulk/tags` | POST | gm/admin | Bulk **add** tags. Body: `{ids, tags}` |
-| `/api/systems/:id/cover` | GET | any | Serves the system's folder cover art or uploaded cover image. 404 when it has neither |
+| `/api/systems/:id/cover` | GET | any (not guest) | Serves the system's folder cover art or uploaded cover image. 404 when it has neither |
 | `/api/systems/:id/cover` | POST | gm/admin | Upload a cover image (multipart `file`). PNG/JPEG/WebP/GIF, max 10 MB |
 | `/api/systems/:id/cover/from-source` | POST | gm/admin | Set the cover from an image Grimoire already holds. Body: `{source_type, source_id}` - see [Setting an image from an existing asset](#setting-an-image-from-an-existing-asset) |
 | `/api/systems/:id/cover` | DELETE | gm/admin | Remove the uploaded cover. Folder art is library-managed and unaffected |
-| `/api/systems/:id/book-folders` | GET | any | Book subcategory folders for this system and their tags. Returns `{folders: [{path, tags}]}` |
+| `/api/systems/:id/book-folders` | GET | any (not guest) | Book subcategory folders for this system and their tags. Returns `{folders: [{path, tags}]}` |
 | `/api/systems/:id/book-folders` | PATCH | gm/admin | Create or replace a folder's tag list. Body `{path, tags}`. `path` must be `{system_id}/{category}/{subfolder…}` for this system - 400 otherwise |
 | `/api/systems/:id/book-folders` | DELETE | gm/admin | Delete a folder row and its tags. Query: `path` (same grammar as PATCH). 404 when no such row |
 
@@ -519,7 +519,7 @@ does not support pasting, and a request with neither `identity` nor `paste`.
 
 **Book list response:** `{"total": int, "books": [...]}`
 
-**Access control on by-id routes:** `GET /api/books` (the library browse) is blocked for guests, but the by-id content routes (`:id`, `:id/file`, `:id/thumbnail`, `:id/toc`, `:id/page/...`) are reachable by any authenticated user and enforce access themselves. Guests may only read a book **shared into a campaign they belong to** (via a `CampaignResource` whose visibility permits them); an unshared or `gm`-only book returns 403. For non-guests, an `is_explicit` book returns 403 when the caller has `allow_explicit` disabled - the file/page routes enforce this the same way `GET /api/books/:id` does. A book deliberately shared into a guest's campaign is served regardless of its explicit flag (guests have no NSFW preference of their own).
+**Access control on by-id routes:** `GET /api/books` (the library browse) is blocked for guests, but the by-id content routes (`:id`, `:id/file`, `:id/thumbnail`, `:id/toc`, `:id/page/...`) are reachable by any authenticated user and enforce access themselves. Guests may only read a book **shared into a campaign they belong to** (via a `CampaignResource` whose visibility permits them); an unshared or `gm`-only book returns 403 (404 from `GET /api/books/:id`, so its title is not disclosed). The `variants` list on `GET /api/books/:id` is trimmed for a guest to the variants they may read. For non-guests, an `is_explicit` book returns 403 when the caller has `allow_explicit` disabled - the file/page routes enforce this the same way `GET /api/books/:id` does. A book deliberately shared into a guest's campaign is served regardless of its explicit flag (guests have no NSFW preference of their own).
 
 #### Access levels (issue #258)
 
@@ -592,19 +592,19 @@ each section is collapsible.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/genres` | GET | any | `{"genres": [{id, name, parent_id, is_default, sort_order}]}`. Tiered via `parent_id` (e.g. Cyberpunk → Science Fiction). |
+| `/api/genres` | GET | any (not guest) | `{"genres": [{id, name, parent_id, is_default, sort_order}]}`. Tiered via `parent_id` (e.g. Cyberpunk → Science Fiction). |
 | `/api/genres` | POST | admin | Create a genre. Body `{name, parent_id?}`. 409 if the name exists. |
 | `/api/genres/:id` | DELETE | admin | Delete a genre (and its children). 409 with `{detail: {message, name, usage_count}}` if attached to a system/book, unless `?force=true`. |
-| `/api/system-families` | GET | any | `{"families": [{id, name, is_default, sort_order}]}` |
+| `/api/system-families` | GET | any (not guest) | `{"families": [{id, name, is_default, sort_order}]}` |
 | `/api/system-families` | POST | admin | Create a family. Body `{name}`. 409 if the name exists. |
 | `/api/system-families/:id` | DELETE | admin | Delete a family. 409 if in use unless `?force=true`. |
-| `/api/parent-systems` | GET | any | `{"parent_systems": [{id, name, is_default, sort_order}]}`. Empty by default (library-specific). |
+| `/api/parent-systems` | GET | any (not guest) | `{"parent_systems": [{id, name, is_default, sort_order}]}`. Empty by default (library-specific). |
 | `/api/parent-systems` | POST | admin | Create a parent system. Body `{name}`. 409 if the name exists. |
 | `/api/parent-systems/:id` | DELETE | admin | Delete a parent system. 409 if in use unless `?force=true`. |
-| `/api/licenses` | GET | any | `{"licenses": [{id, name, is_default, sort_order}]}`. Seeded with common TTRPG licenses (OGL, ORC, CC-BY, Proprietary, …). |
+| `/api/licenses` | GET | any (not guest) | `{"licenses": [{id, name, is_default, sort_order}]}`. Seeded with common TTRPG licenses (OGL, ORC, CC-BY, Proprietary, …). |
 | `/api/licenses` | POST | admin | Create a license. Body `{name}`. 409 if the name exists. |
 | `/api/licenses/:id` | DELETE | admin | Delete a license. 409 if used by a system or book unless `?force=true`. |
-| `/api/dice-materials` | GET | any | `{"dice_materials": [{id, name, group, is_default, sort_order}]}`. `group` is one of `Dice`\|`Cards`\|`Other`\|`Custom`. Sources the editor's dice/materials picker options. |
+| `/api/dice-materials` | GET | any (not guest) | `{"dice_materials": [{id, name, group, is_default, sort_order}]}`. `group` is one of `Dice`\|`Cards`\|`Other`\|`Custom`. Sources the editor's dice/materials picker options. |
 | `/api/dice-materials` | POST | admin | Create a dice/material. Body `{name, group?}` (defaults to `Custom`). 409 if the name exists. The editor picker best-effort POSTs here (as group `Custom`) when an admin types a new value, so it becomes reusable. |
 | `/api/dice-materials/:id` | DELETE | admin | Delete a dice/material. 409 if in use unless `?force=true`. |
 
@@ -941,13 +941,13 @@ folders. With grouping off the view is one flat list sorted by filename, and
 paging by path instead scatters every arriving page across the whole alphabet,
 inserting cards among the ones already on screen.
 
-**Access control on media by-id routes:** As with books, the library-browse list routes (`GET /api/maps`, `/api/tokens`, `/api/audio`, `/api/models` and their `*-folders`) are blocked for guests, but the by-id routes (`:id`, `:id/file`, `:id/thumbnail`, `:id/artwork`) are reachable by any authenticated user and enforce access themselves. A guest may only read a map/token/audio/model item **shared into a campaign they belong to** (via a `CampaignResource` whose visibility permits them); otherwise the route returns 403. An explicit token returns 403 for a non-guest who has `allow_explicit` disabled, on the file/thumbnail routes as well as `GET /api/tokens/:id`. An item deliberately shared into a guest's campaign is served regardless of its explicit flag.
+**Access control on media by-id routes:** As with books, the library-browse list routes (`GET /api/maps`, `/api/tokens`, `/api/audio`, `/api/models` and their `*-folders`) are blocked for guests, but the by-id routes (`:id`, `:id/file`, `:id/thumbnail`, `:id/artwork`) are reachable by any authenticated user and enforce access themselves. A guest may only read a map/token/audio/model item **shared into a campaign they belong to** (via a `CampaignResource` whose visibility permits them); otherwise the route returns 403. The `variants` list on each detail route is trimmed for a guest to the variants shared with them. An explicit token returns 403 for a non-guest who has `allow_explicit` disabled, on the file/thumbnail routes as well as `GET /api/tokens/:id`. An item deliberately shared into a guest's campaign is served regardless of its explicit flag.
 
 ### Favorites
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/favorites` | GET | any | List current user's favorites with enriched detail |
+| `/api/favorites` | GET | any | List current user's favorites with enriched detail. For a guest, `items` holds only books and media shared into their campaign - favorites of anything else, and of systems and tags, are left out |
 | `/api/favorites` | POST | any | Add a favorite (idempotent). Body: `{item_type, item_id}` |
 | `/api/favorites/:type/:id` | DELETE | any | Remove a favorite (silent 204 if not found) |
 
@@ -966,9 +966,9 @@ with `tags`); these endpoints manage the shared tag catalog and browse items by 
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/tags` | GET | any | List tags with usage `count` and `is_favorite` (for the current user). Query `in_use_by=system\|book\|map\|token\|audio` restricts to tags used on that resource type. Folder tags (from `tags.json`/folder tagging, including **book subcategory folders**) are merged in and counted by the items they cover |
+| `/api/tags` | GET | any (not guest) | List tags with usage `count` and `is_favorite` (for the current user). Query `in_use_by=system\|book\|map\|token\|audio` restricts to tags used on that resource type. Folder tags (from `tags.json`/folder tagging, including **book subcategory folders**) are merged in and counted by the items they cover |
 | `/api/tags` | POST | gm/admin | Create a tag up front (idempotent by internal key). Body: `{value, display?}`. A `value` containing `/` or `\` is refused with a 422 (see **Tag names** below) |
-| `/api/tags/:internal/items` | GET | any | Items carrying the tag: `items` (directly tagged, enriched like favorites) plus `folders` (folder-derived - each `{resource_type, path, items}` lists the whole folder's contents; book folders show only their subfolder path). Query `resource_type=` filters by type. Explicit items are hidden from users who can't see them |
+| `/api/tags/:internal/items` | GET | any (not guest) | Items carrying the tag: `items` (directly tagged, enriched like favorites) plus `folders` (folder-derived - each `{resource_type, path, items}` lists the whole folder's contents; book folders show only their subfolder path). Query `resource_type=` filters by type. Explicit items are hidden from users who can't see them |
 | `/api/tags/:internal` | PATCH | gm/admin | Rename a tag's display value; when the new display normalizes to a different key the internal is re-keyed too (merging into an existing tag on collision). Works for **folder-only** tags too (a tag that lives only in folder JSON is materialised into a catalog row so the rename persists - no 404). Body: `{display}`. A `display` containing `/` or `\` is refused with a 422 |
 | `/api/tags/:internal/merge` | POST | gm/admin | Merge this tag into another, re-pointing all links. Body: `{into}`. `into` is refused with a 422 if it contains `/` or `\`; the **source** `:internal` may contain one, so merging is a way out of such a tag |
 | `/api/tags/:internal` | DELETE | gm/admin | Delete a tag and unlink it from every resource |
@@ -1186,7 +1186,7 @@ without risking markup injection.
 |----------|--------|------|-------------|
 | `/api/campaigns` | GET | any | List own + invited campaigns (admins see only their own here). Each item includes `has_banner`, `next_session` (next scheduled date or null), `last_accessed_at`, `is_archived`, and `archived_at`. Archived campaigns are omitted unless `?include_archived=true`, which returns archived campaigns *alongside* active ones (not archived-only). |
 | `/api/campaigns` | POST | any (gm/admin for `is_gm_campaign: true`) | Create campaign. Body: `{name, description?, is_gm_campaign?, gm_title?, system_id?, system_name?, parent_campaign_id?, resources?}`. `description` accepts markdown. `system_name` is free text for a system not in the library (ignored when `system_id` is set). `resources` is an explicit list of `{resource_type, resource_id, visibility?, shared_user_ids?}` to link - omit it (or send `[]`) to link nothing. No resources are auto-added. Returns 403 if the user's `campaign_access` is disabled. |
-| `/api/campaigns/:id` | GET | owner or member | Campaign detail with members and resources. The `resources` array is filtered by the caller's visibility (same rule as `GET /api/campaigns/:id/resources`): members never receive `gm`-only or unshared-`private` resource ids. Includes `has_banner`, `is_archived`, `archived_at`, and `locked` (`true` when the campaign is archived **or** the owner's `campaign_access` is disabled - the campaign is then read-only for everyone, write endpoints return 409 for archived / 403 for disabled access, and members keep read access) plus `owner_has_campaign_access` (which stays `true` for a merely-archived campaign, so the two causes are distinguishable). Each member includes `id`, `has_art`, `has_sheet`, `character_sheet_filename`, and `campaign_access` (false → flagged as a disabled user). Opening this endpoint records `last_accessed_at` (drives recently-accessed sorting on the campaigns list). |
+| `/api/campaigns/:id` | GET | owner or member | Campaign detail with members and resources. The `resources` array is filtered by the caller's visibility (same rule as `GET /api/campaigns/:id/resources`): members never receive `gm`-only or unshared-`private` resource ids. Includes `has_banner`, `is_archived`, `archived_at`, and `locked` (`true` when the campaign is archived **or** the owner's `campaign_access` is disabled - the campaign is then read-only for everyone, write endpoints return 409 for archived / 403 for disabled access, and members keep read access) plus `owner_has_campaign_access` (which stays `true` for a merely-archived campaign, so the two causes are distinguishable). Each member includes `id`, `has_art`, `has_sheet`, `character_sheet_filename`, and `campaign_access` (false → flagged as a disabled user). A guest member's `guest_code` is returned to the owner only; everyone else gets `null`. Opening this endpoint records `last_accessed_at` (drives recently-accessed sorting on the campaigns list). |
 | `/api/campaigns/:id` | PATCH | owner | Update `name`, `description` (markdown), `gm_title`, `system_id`, `system_name`, `parent_campaign_id`. Setting `system_id` clears `system_name` and vice-versa (`system_name: ""` clears it). |
 | `/api/campaigns/:id` | DELETE | owner | Delete campaign and all related data. Admins delete via the database directly. |
 | `/api/campaigns/:id/convert-to-group` | POST | owner (gm/admin) | Promote a personal campaign to a GM-run group campaign, unlocking members, guests, and the schedule. Body: `{gm_title?}` (blank/omitted keeps the current title). Nothing is migrated - the campaign's existing resources, wiki, and sessions carry over untouched and the member list starts empty. **One-way**: there is no group → personal route. Returns 409 if the campaign is already a group campaign, 403 if the caller is not a gm/admin. |
@@ -1270,7 +1270,7 @@ The GET (serving) endpoints for banners, art, sheets, and campaign files (`/file
 | `/api/campaigns/:id/members/:member_id/sheet` | GET | member or owner | Download character sheet (original filename) |
 | `/api/campaigns/:id/members/:member_id/sheet` | DELETE | member (own) or owner | Remove character sheet |
 | `/api/campaigns/:id/members/:member_id/sheet/duplicate` | POST | member (own) or owner | Copy a blank PDF into the member's sheet (body `{ source_type: "book"\|"file", source_id }`) |
-| `/api/campaigns/:id/sheet-sources` | GET | member or owner | List duplicatable blank sheets (`{ books, files }`): library `character-sheet` PDFs (filtered to the campaign's system when set) and campaign PDF files |
+| `/api/campaigns/:id/sheet-sources` | GET | member or owner | List duplicatable blank sheets (`{ books, files }`): library `character-sheet` PDFs (filtered to the campaign's system when set, and to books the caller may read - a guest sees only books shared into the campaign) and campaign PDF files whose resource the caller can see. `sheet/duplicate` accepts only a source this list offers the caller, else 404 |
 
 A member's **token** is stored separately from their **art** rather than reusing the same
 column: the art is a portrait for the campaign page, the token is the cropped disc that goes
@@ -2151,7 +2151,7 @@ genuine gaps.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/downloads/archive` | GET | user | Stream a collection of files as one archive |
+| `/api/downloads/archive` | GET | any (not guest) | Stream a collection of files as one archive |
 
 **Query parameters:** `type` (required) selects the scope, `fmt` selects the
 format — `zip` (default), `tar`, `tar.gz`, `tar.bz2` — and the remaining

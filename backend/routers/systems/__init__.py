@@ -74,6 +74,7 @@ router.add_api_route(
         "Returns all known book subcategory folder paths for a system and "
         "their associated tags."
     ),
+    dependencies=[Depends(require_not_guest)],
     response_model=BookFoldersResponse,
 )
 router.add_api_route(
@@ -145,6 +146,7 @@ router.add_api_route(
         "Serves the system's folder cover art or uploaded cover image. 404 when "
         "the system has neither (clients fall back to `cover_book_id`)."
     ),
+    dependencies=[Depends(require_not_guest)],
 )
 router.add_api_route(
     "/{system_id}/cover",

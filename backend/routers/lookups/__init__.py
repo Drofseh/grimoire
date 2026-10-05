@@ -3,8 +3,9 @@
 Registers CRUD routes for the curated genre tree and system-family list that
 feed the editor dropdowns and the settings management screens.
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from ...auth import require_not_guest
 from .core import (
     create_dice_material,
     create_genre,
@@ -36,6 +37,9 @@ from ._schemas import (
 
 router = APIRouter(tags=["lookups"])
 
+# The lists are library metadata that only the editors and settings screens
+# read, neither of which a guest can reach, so guests are refused them.
+
 __all__ = ["router"]
 
 router.add_api_route(
@@ -44,6 +48,7 @@ router.add_api_route(
     methods=["GET"],
     summary="List all genres (tiered)",
     response_model=GenresResponse,
+    dependencies=[Depends(require_not_guest)],
 )
 router.add_api_route(
     "/genres",
@@ -65,6 +70,7 @@ router.add_api_route(
     methods=["GET"],
     summary="List all system families",
     response_model=SystemFamiliesResponse,
+    dependencies=[Depends(require_not_guest)],
 )
 router.add_api_route(
     "/system-families",
@@ -86,6 +92,7 @@ router.add_api_route(
     methods=["GET"],
     summary="List all parent systems",
     response_model=ParentSystemsResponse,
+    dependencies=[Depends(require_not_guest)],
 )
 router.add_api_route(
     "/parent-systems",
@@ -107,6 +114,7 @@ router.add_api_route(
     methods=["GET"],
     summary="List all licenses",
     response_model=LicensesResponse,
+    dependencies=[Depends(require_not_guest)],
 )
 router.add_api_route(
     "/licenses",
@@ -128,6 +136,7 @@ router.add_api_route(
     methods=["GET"],
     summary="List all dice/materials",
     response_model=DiceMaterialsResponse,
+    dependencies=[Depends(require_not_guest)],
 )
 router.add_api_route(
     "/dice-materials",
