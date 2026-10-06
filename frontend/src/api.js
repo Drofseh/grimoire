@@ -626,6 +626,129 @@ export const addons = {
 }
 
 /**
+ * Character sheets (issue #129).
+ *
+ * Schemas and characters are both per-user, like themes: installing a sheet
+ * cannot affect anyone else, so there is no admin step. Computed values come
+ * back from the server on every read rather than being stored, so a corrected
+ * formula fixes every character built on it.
+ */
+export const characters = {
+  listSchemas: () => api.get('/characters/schemas'),
+  getSchema: (schemaId) => api.get(`/characters/schemas/${encodeURIComponent(schemaId)}`),
+  importSchema: (body) => api.post('/characters/schemas', body),
+  browseSheets: () => api.get('/characters/schemas/browse'),
+  installSheet: (sheetId) => api.post(`/characters/schemas/install/${encodeURIComponent(sheetId)}`),
+  deleteSchema: (schemaId) => api.delete(`/characters/schemas/${encodeURIComponent(schemaId)}`),
+  list: (params = {}) => {
+    // A string is read as a schema filter, which is what Phase 1 callers pass.
+    const query = typeof params === 'string' ? { schema_ref: params } : params || {}
+    const search = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && value !== '') search.set(key, value)
+    }
+    const qs = search.toString()
+    return api.get(`/characters${qs ? `?${qs}` : ''}`)
+  },
+  get: (id) => api.get(`/characters/${id}`),
+  create: (body) => api.post('/characters', body),
+  update: (id, body) => api.put(`/characters/${id}`, body),
+  remove: (id) => api.delete(`/characters/${id}`),
+  export: (id) => api.get(`/characters/${id}/export`),
+  import: (payload, importEntries = true) =>
+    api.post('/characters/import', { payload, import_entries: importEntries }),
+  // `v` is the character's `portrait_version`, which changes with the image:
+  // portraits are cached for minutes, so the same URL would keep showing the
+  // old art after a replacement.
+  portraitUrl: (id, v) => mediaUrl(`/characters/${id}/portrait`, v ? { v } : {}),
+  uploadPortrait: (id, file) => api.upload(`/characters/${id}/portrait`, file),
+  deletePortrait: (id) => api.delete(`/characters/${id}/portrait`),
+}
+
+/**
+ * Character content catalog (issue #131).
+ *
+ * Packs are server-wide and installed by an admin, but the catalog is described
+ * by the calling user's own copy of the schema — two people may have different
+ * versions installed, and each browses what their copy declares.
+ */
+export const contentAdmin = {
+  reloadPacks: () => api.post('/content/packs/reload'),
+}
+
+export const content = {
+  packs: (schemaId) =>
+    api.get(`/content/packs${schemaId ? `?schema_id=${encodeURIComponent(schemaId)}` : ''}`),
+  types: (schemaId) => api.get(`/content/${encodeURIComponent(schemaId)}/types`),
+  browse: (schemaId, contentType, params = {}) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === null || value === '') continue
+      // Filters travel as filter[field]=value, which is the shape the catalog
+      // endpoint reads them back out of.
+      if (key === 'filters') {
+        for (const [field, wanted] of Object.entries(value)) {
+          if (wanted !== '' && wanted !== undefined) query.set(`filter[${field}]`, wanted)
+        }
+      } else {
+        query.set(key, value)
+      }
+    }
+    const qs = query.toString()
+    return api.get(
+      `/content/${encodeURIComponent(schemaId)}/${encodeURIComponent(contentType)}${qs ? `?${qs}` : ''}`
+    )
+  },
+  entry: (schemaId, contentType, entryId) =>
+    api.get(
+      `/content/${encodeURIComponent(schemaId)}/${encodeURIComponent(contentType)}/${encodeURIComponent(entryId)}`
+    ),
+  resolve: (schemaId, ids) =>
+    api.get(
+      `/content/${encodeURIComponent(schemaId)}/resolve?ids=${encodeURIComponent(ids.join(','))}`
+    ),
+}
+
+/**
+ * Rulesets (issue #132).
+ *
+ * A named set of catalogue content that belongs either to a campaign —
+ * everyone at that table reads it, the GM edits it — or to the server, which
+ * every game can use. That is what lets two games in the same system allow
+ * different content.
+ */
+export const rulesets = {
+  list: (params = {}) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== '') query.set(key, value)
+    }
+    const qs = query.toString()
+    return api.get(`/rulesets${qs ? `?${qs}` : ''}`)
+  },
+  get: (id) => api.get(`/rulesets/${id}`),
+  create: (body) => api.post('/rulesets', body),
+  update: (id, body) => api.put(`/rulesets/${id}`, body),
+  remove: (id) => api.delete(`/rulesets/${id}`),
+  browsePacks: () => api.get('/rulesets/packs/browse'),
+  installPack: (packId) => api.post(`/rulesets/packs/install/${encodeURIComponent(packId)}`),
+  uninstallPack: (packId) => api.delete(`/rulesets/packs/${encodeURIComponent(packId)}`),
+  installable: (schemaId) =>
+    api.get(`/rulesets/installable${schemaId ? `?schema_id=${encodeURIComponent(schemaId)}` : ''}`),
+  import: (id, body) => api.post(`/rulesets/${id}/import`, body),
+  export: (id) => api.get(`/rulesets/${id}/export`),
+  entries: (id, contentType) =>
+    api.get(
+      `/rulesets/${id}/entries${contentType ? `?content_type=${encodeURIComponent(contentType)}` : ''}`
+    ),
+  createEntry: (id, body) => api.post(`/rulesets/${id}/entries`, body),
+  getEntry: (id, entryId) => api.get(`/rulesets/${id}/entries/${entryId}`),
+  updateEntry: (id, entryId, body) => api.put(`/rulesets/${id}/entries/${entryId}`, body),
+  removeEntry: (id, entryId) => api.delete(`/rulesets/${id}/entries/${entryId}`),
+  fork: (id, body) => api.post(`/rulesets/${id}/fork`, body),
+}
+
+/**
  * Bulk operations (issue #270).
  *
  * These replace the old one-request-per-item fan-out, which raced on tag

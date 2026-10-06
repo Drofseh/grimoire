@@ -1723,6 +1723,574 @@ placed there by hand works without any UI step. Config and install state ride in
 the generic `app_settings` table under `addons.*` keys, so this feature adds no
 schema.
 
+### Characters
+
+Character sheets and the schemas that describe them, both stored **per user**.
+A schema is a JSON document defining a sheet's fields, computed values, and
+layout; a character is one set of answers to it. Grimoire core renders any
+schema without game-specific code.
+
+Like themes, and unlike add-ons, these are per-account: installing a sheet
+cannot affect anyone else, so any authenticated user may install one and there
+is no admin approval. Guests included - a guest account exists to play in one
+campaign, which is exactly who wants a character sheet.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/characters/schemas` | GET | user | The user's installed schemas, each with a `character_count` |
+| `/api/characters/schemas` | POST | user | Install a pasted sheet (see below). 400 with a message naming the problem if it does not validate |
+| `/api/characters/schemas/browse` | GET | user | The community catalogue of sheets, each marked `installed` |
+| `/api/characters/schemas/install/:sheet_id` | POST | user | Install one sheet from the catalogue |
+| `/api/characters/schemas/:schema_id` | GET | user | One schema with its validated `document` |
+| `/api/characters/schemas/:schema_id` | DELETE | user | Uninstall a schema. Characters built on it are **kept** |
+| `/api/characters` | GET | user | The user's characters, newest first. `?schema_ref=` filters by schema |
+| `/api/characters` | POST | user | Create a character. Body is `{schema_ref, name?, data?}`. 400 if that schema is not installed |
+| `/api/characters/:id` | GET | user | One character with its `data` and freshly evaluated `computed` |
+| `/api/characters/:id` | PUT | user | Update `name`, `data` and/or `unset`. `data` is a **partial patch** - only the fields it names are touched. See below for the reserved keys |
+| `/api/characters/:id` | DELETE | user | Delete a character |
+| `/api/characters/import` | POST | user | Rebuild a character from an exported file |
+| `/api/characters/:id/export` | GET | user | Export a character as a self-contained file |
+| `/api/characters/:id/portrait` | POST | user | Set a portrait (PNG/JPEG/WebP/GIF, 5 MB) |
+| `/api/characters/:id/portrait` | GET | user | The portrait image |
+| `/api/characters/:id/portrait` | DELETE | user | Remove the portrait |
+
+**Installing a pasted sheet** takes the sheet either already parsed, as
+`document`, or as text:
+
+```json
+{ "text": "id: cairn\nname: Cairn\nfields: {...}",
+  "layout": "<div class=\"sheet\">...</div>",
+  "styles": ".sheet { display: grid; }" }
+```
+
+`text` is parsed as **JSON and then as YAML**, the same rule add-on indexes
+follow. YAML is the friendlier of the two for a hand-written sheet: no quoting
+every key, no trailing-comma errors, and comments are allowed.
+
+`layout` and `styles` carry a custom sheet's HTML and CSS as their own fields
+rather than escaped into the document, which is how the community repository
+keeps them too. Given here they **override** whatever the document holds, and
+`layout_file`/`styles_file` pointers are dropped — what gets stored is one
+self-contained document, so the sheet still renders if its catalogue moves.
+
+A pasted layout goes through the same tag allowlist as a downloaded one, and a
+pasted stylesheet through the same property filter. Pasting is not a way around
+either.
+
+**Updating a character.** `data` is merged into what is stored; a value the
+schema does not declare is dropped rather than stored. `unset` is a list of
+field names to remove, which is how a field goes back to its `default_from`
+value after the player typed over it - separate from `data`, because a `null`
+there already means "cleared" mid-edit.
+
+Two reserved keys may ride in `data` beside the fields, each checked strictly
+rather than stored as sent:
+
+| Key | Shape | Purpose |
+|---|---|---|
+| `_overrides` | `{computed name: value}` | The player's own value for a computed value. It replaces the formula, and everything depending on it follows. Names must be computed values; values must be short scalars. Sent whole - leaving a name out resets it |
+| `_granted` | `{picking field: {target field: [value, ...]}}` | What each `on_pick` rule added, so changing the pick can take it back off. The source must carry `on_pick` and each target must be a declared field |
+
+**Schema fields:** `id`, `schema_id`, `name`, `system`, `description`,
+`version`, `source_id`, `source_url`, `source_version`, `is_community`,
+`character_count`, and on detail `document`.
+
+**Character fields:** `id`, `name`, `schema_ref`, `schema_name`, `system`,
+`schema_missing`, `campaign_id`, `portrait_path`, `portrait_version`, `owned`,
+`created_at`, `updated_at`, and on detail `data`, `computed`, `validators`, and
+`entries`.
+
+`portrait_version` changes whenever the portrait does (it is `null` without
+one), and the portrait upload returns it too. Pass it as `?v=` on the portrait's
+URL: the image is cached for five minutes, so the same URL would keep serving
+the old art after a replacement.
+
+#### Campaign scoping
+
+Setting `campaign_id` puts a character on a table, and every member of that
+campaign can then **read** the sheet — which is the point, since a GM should be
+able to see what their players are playing. Writing stays with the owner:
+`owned` is false when you are reading someone else's, and edits, deletes and
+portrait changes answer 404. A character may only be placed in a campaign its
+owner belongs to (403 otherwise), and `campaign_id: ""` takes it back out.
+
+A character with no campaign stays private to its owner. `GET /api/characters`
+returns your own plus your parties', and `?campaign_id=` narrows it to one
+table's roster.
+
+#### Export and import
+
+Export is **denormalised**: every reference is resolved and the entry's full
+data embedded, and the schema travels with the file. That is the portability
+guarantee — a character shared with someone whose instance has neither the pack
+nor the ruleset still opens and still computes correctly.
+
+```json
+{ "$schema": "grimoire://character/v1",
+  "name": "Vex", "schema_id": "dnd-5e",
+  "schema": { "...the whole sheet definition..." },
+  "data": { "spells": [ { "_ref": "my-spell" } ] },
+  "entries": { "my-spell": { "content_type": "spell", "source": "ruleset",
+                             "name": "My Spell", "data": { "level": 4 } } } }
+```
+
+Importing installs the schema if the importer does not have it, and recreates
+embedded entries in a ruleset named after the import — but **only what is
+missing**. An entry this instance already has, in a pack or in any ruleset the
+importer can read, wins over the embedded copy, so an erratum applied locally
+reaches an imported character. The new ruleset is scoped to the campaign the
+character joined, or left server-wide when it joined none. Pass
+`import_entries: false` to skip that and let the references read as missing
+instead.
+
+Anyone who may read a character may export it, so a GM can archive a party
+member's sheet.
+
+**Computed values are never stored.** They are evaluated from `data` on every
+read, so correcting a formula in a schema immediately fixes every character
+built on it rather than leaving stale numbers behind.
+
+**Submitted values are coerced to their declared type** and anything the schema
+does not declare is dropped. Out-of-range numbers are clamped rather than
+rejected, because refusing to save a whole character over one out-of-range score
+would lose the player's work.
+
+**A character outlives its schema.** `schema_ref` is a soft reference by
+`schema_id`, not a foreign key, so uninstalling a sheet leaves its characters
+readable: they come back with `schema_missing: true`, an empty `computed`, and
+their stored `data` intact. Reinstalling the schema restores the full sheet.
+
+#### The sheet catalogue
+
+Browsing and installing need only an account — a sheet lives in one user's
+account and changes nothing for anyone else, so there is no admin step, exactly
+as with themes.
+
+The catalogue URL is **derived from the add-on index** the admin already
+configured rather than being a second setting. `.../main/index.json` and
+`.../main/themes/index.json` both resolve to
+`.../main/character-sheets/index.json`, so pointing the server at a branch
+points every catalogue at it — themes, note templates and sheets together.
+
+**Several sources** are supported, as for add-ons and themes: the add-on index
+setting takes a comma-separated list, and every entry is consulted. Because two
+catalogues may each offer a sheet with the same id, a listed `id` is
+**namespaced by its source** (`cairn-a1b2c3d4`) while `raw_id` is what the sheet
+calls itself. Install by the namespaced id to choose a particular source's copy;
+a bare id still works and resolves to the first source offering it.
+
+`installed` is matched on the source as well as the id, so installing one
+catalogue's `cairn` does not mark another's. A schema pasted in by hand has no
+recorded source and therefore marks every copy of its id, since installing any
+of them would replace it.
+
+`sources` lists every catalogue consulted and `errors` the ones that could not
+be read — reported rather than dropped, because with several configured a
+missing source otherwise just looks like a smaller catalogue.
+
+**Catalogue entry fields:** `id`, `name`, `version`, `system`, `description`,
+`author`, `author_url`, `homepage`, `license`, `license_url`, `attribution`,
+`custom_layout`, `field_count`, `grimoire_min_version`, `path`, `sha256`,
+`index_url`, `installed`. The attribution is carried in the listing so it can
+be read **before** installing, and is rendered verbatim.
+
+A downloaded sheet is verified against the catalogue's SHA-256 and pinned to
+the catalogue's host: a catalogue may say where its files are, but not send the
+server somewhere else. It is then validated by the same schema validator a
+pasted sheet goes through, so a sheet that does not validate is refused rather
+than stored. Nothing in a sheet executes.
+
+A source that cannot be read is skipped rather than failing the whole browse —
+one unreachable branch should not hide the sheets that are fine. Browsing
+answers 403 when `DISABLE_EXTERNAL_ADD_ON_INSTALL` is set, and 502 when the
+catalogue is unreachable.
+
+#### Schema documents
+
+```json
+{
+  "id": "dnd-5e",
+  "name": "D&D 5e",
+  "version": "1.0.0",
+  "fields": { "strength": { "type": "number", "label": "Strength", "min": 1, "max": 20 } },
+  "computed": { "str_mod": { "formula": "floor((strength - 10) / 2)", "label": "STR Mod" } },
+  "layout": [{ "title": "Abilities", "fields": ["strength", "str_mod"] }]
+}
+```
+
+Field types are `text`, `number`, `textarea`, `checkbox`, `select`,
+`multiselect`, and `list`. Formulas are a small arithmetic/comparison/logic
+language with a closed function table (`floor`, `ceil`, `round`, `abs`, `min`,
+`max`, `sum`, `len`, `if`, `clamp`, `signed`, plus the list functions below).
+They are **parsed, never executed** - there is no `eval` anywhere in the engine
+- and a formula referencing an unknown name is rejected at install rather than
+failing at render.
+
+#### List fields
+
+A `list` is a repeatable table - equipment, attacks, spell slots. Each column is
+itself a field definition, so a column may be any scalar type (`text`, `number`,
+`checkbox`, `select`, `textarea`) but **not** another list:
+
+```json
+{
+  "equipment": {
+    "type": "list", "label": "Equipment",
+    "columns": [
+      { "key": "name", "type": "text", "label": "Name", "flex": 3 },
+      { "key": "qty", "type": "number", "label": "Qty", "default": 1 },
+      { "key": "equipped", "type": "checkbox", "label": "Eq." }
+    ]
+  }
+}
+```
+
+Every row is rebuilt from the declared columns on save, so a key the schema does
+not define is dropped - the same rule top-level fields follow. A missing cell
+falls back to its column's `default`. A list is capped at 500 rows.
+
+Five functions read across rows, taking the **column name as a string** (a bare
+name would resolve against the character before the function saw it):
+
+| Function | Returns |
+|---|---|
+| `count_where(list, 'col')` | How many rows have that column truthy (or equal to a third argument) |
+| `sum_where(list, 'col')` | Total of that column, optionally filtered: `sum_where(kit, 'qty', 'equipped', true)` |
+| `sum_qty(list, 'col')` | Total of that column times each row's `qty` (or a named third column): `sum_qty(gear, 'mass')`. A blank quantity counts once. Also reads a catalog list, with each entry's per-entry quantity |
+| `any_where(list, 'col')` | Whether any row matches |
+| `column(list, 'col')` | Every value of one column, for `sum()`/`min()`/`max()` |
+| `contains(value, x)` | Whether a multiselect holds `x`, or text contains it |
+
+#### Conditional fields - `visible_if`
+
+A field, or a whole `layout` section, may carry a `visible_if` expression and is
+drawn only when it is true. In an HTML layout it is an attribute on `g-field`,
+`g-computed` or `g-section`, alongside the existing `<g-if test="...">`:
+
+```json
+{ "spell_dc": { "type": "number", "label": "Spell DC", "visible_if": "is_caster" } }
+```
+
+A condition that cannot be evaluated **shows** the field. Hiding part of a sheet
+over a broken expression would cost the player access to their own data.
+
+#### Validators
+
+A schema may declare rules that check a character. A rule states what *should*
+be true, so a false result is what gets reported:
+
+```json
+{
+  "validators": [
+    { "rule": "count_where(equipment, 'equipped') <= 2",
+      "severity": "warning",
+      "message": "More equipped than you can carry" }
+  ]
+}
+```
+
+`severity` is `warning` or `error`; `message` is required, because a rule that
+fires without saying why is not actionable. Rules may read fields and computed
+values alike, and are rejected at install if they do not parse or name something
+that does not exist.
+
+Results come back on `GET`/`POST`/`PUT` of a character as `validators[]`, each
+`{rule, message, severity, field}`. **They never block saving.** A sheet
+mid-edit is routinely invalid - you pick the spells before you raise the level
+that allows them - and refusing the write would lose the player's work.
+
+**HTML layouts.** A schema may replace the JSON `layout` with `layout_html`, an
+HTML *template*, plus an optional `styles` block. A catalogue sheet should keep
+both in sibling `.html` and `.css` files instead — HTML escaped into a JSON
+string is unreadable — and the catalogue then carries `layout_path`,
+`layout_sha256`, `styles_path` and `styles_sha256`. Each file is downloaded and
+digest-checked separately, then folded into one self-contained document, so the
+stored sheet does not depend on the catalogue still being there. Both are validated at install
+and returned as derived `layout_ast` / `styles_css`:
+
+```html
+<div class="sheet">
+  <g-section title="Abilities">
+    <g-field name="strength" /><g-computed name="str_mod" />
+  </g-section>
+  <g-if test="level > 4"><g-field name="feat" /></g-if>
+</div>
+```
+
+Directives are `g-field`, `g-computed`, `g-label`, `g-value`, `g-section`,
+`g-if`, and `g-repeat`. Inside a `g-repeat` over a list field, a `g-field`
+naming one of that list's columns addresses **that row's** cell, so a custom
+layout can draw an editable table of its own. Everything else is a closed allowlist of structural
+tags. **The template never becomes markup**: it is parsed to an AST server-side
+and rendered as React elements, so no schema string ever reaches `innerHTML`.
+Event handlers, `<script>`, `<style>`, `<iframe>`, `<input>` and friends, and
+any `href`/`src` that is not relative or https are rejected at install time.
+Schema CSS is scope-prefixed to the sheet and filtered against a property
+allowlist, so a hostile schema cannot restyle the app around it. The worst one
+can do is look wrong.
+
+### Content catalog
+
+A **content pack** is a directory of typed entries - spells, classes, feats,
+kits - for one game system. A character references an entry rather than copying
+it, so an erratum or a ruleset edit reaches every character built on it.
+
+Packs are **server-wide**: installed once into `DATA_PATH/character-content/`,
+loaded on startup and rescan, and shared read-only. Schemas stay per user, so
+the catalog is *content everyone has, described by the caller's own copy of the
+sheet* - two people may have different versions of a schema installed, and each
+browses the content types their copy declares.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/content/packs` | GET | user | Installed packs with their licence and credit. `?schema_id=` filters |
+| `/api/content/packs/reload` | POST | **admin** | Re-read every pack from disk |
+| `/api/content/:schema_id/types` | GET | user | The content types this user's schema declares, each with an entry count |
+| `/api/content/:schema_id/:content_type` | GET | user | Browse: `search`, `filter[field]=value`, `sort`, `page`, `page_size` |
+| `/api/content/:schema_id/:content_type/:entry_id` | GET | user | One entry in full |
+| `/api/content/:schema_id/resolve?ids=a,b,c` | GET | user | Resolve many references at once, for rendering a sheet |
+
+**Browse response:** `entries[]`, `total`, `page`, `page_size`, and
+`filters_available` - facets built from the content type's `filter_fields`, each
+value with the number of entries carrying it. Facets describe the **whole**
+catalog rather than the current page, so choosing one value does not empty every
+other facet and leave no way back. Numeric facet values sort numerically, so a
+spell-level filter reads 1, 2, 3, 10 rather than 1, 10, 2, 3.
+
+Search is FTS5 over each type's `search_fields`, prefix-matched per term. A
+query is reduced to bare words first, so an unbalanced quote or a stray operator
+cannot raise.
+
+**Resolve** marks an id no installed pack provides as `missing` rather than
+omitting it, so a sheet can say "this entry is not installed" instead of
+silently dropping something the player chose.
+
+#### `content_types`
+
+A content type is a field schema applied to catalog entries rather than to a
+character, so its `fields` are validated exactly as a sheet's are and render
+through the same `FieldRenderer`:
+
+```json
+{
+  "content_types": {
+    "spell": {
+      "label": "Spell", "label_plural": "Spells",
+      "identity_field": "name",
+      "sort_default": ["level", "name"],
+      "search_fields": ["name", "school", "description"],
+      "filter_fields": ["level", "school"],
+      "compact_display": "{name} — {school} {level}",
+      "fields": { "name": { "type": "text" }, "level": { "type": "number" } }
+    }
+  }
+}
+```
+
+`identity_field` is the entry's name - what a reference displays and what the
+catalog sorts by. The three field-name lists and every `{token}` in
+`compact_display` are checked against the type's own fields at install, so a
+typo fails loudly rather than producing an empty filter sidebar.
+
+#### `content_ref` and `content_list`
+
+Two field types pick from the catalog. `content_ref` takes one entry (a class, a
+kit); `content_list` takes many (spells known, feats). Both name the
+`content_type` they draw from, which must be one the schema declares.
+
+```json
+{
+  "spells": {
+    "type": "content_list", "content_type": "spell",
+    "allow_freeform": true,
+    "per_entry_fields": { "prepared": { "type": "checkbox" } }
+  }
+}
+```
+
+`per_entry_fields` are the **character's own** notes on an entry - prepared,
+equipped, uses remaining. They are ordinary field definitions, validated and
+coerced like any other.
+
+**Stored shape.** A reference, never a copy:
+
+```json
+{ "signature": { "_ref": "fireball", "_source": "srd" },
+  "spells": [
+    { "_ref": "fireball", "_source": "srd", "_per": { "prepared": true } },
+    { "_inline": true, "name": "A spell I made up" }
+  ] }
+```
+
+`_source` records which pack an entry came from, because two packs for one
+system may each define `fireball`. `_inline` is the freeform escape hatch that
+keeps the catalog optional: with `allow_freeform`, a player can type an entry
+instead of picking one, and never open the browser at all. A freeform entry keeps
+the properties its content type declares - a homebrew spell's level and
+description - coerced to their types; anything undeclared is dropped.
+
+A character detail response carries `entries` - the catalog entries its
+references point at, resolved in one query - so rendering the sheet costs no
+extra request. A reference whose entry is not installed is **kept**: the pack
+may come back, and erasing the player's choice would be worse than showing an id.
+
+#### Catalog functions
+
+Four more expression functions read referenced entries. The resolved table is
+supplied behind the scenes, so an author never writes it:
+
+| Function | Returns |
+|---|---|
+| `ref(field, 'prop')` | One property of a single reference |
+| `sum_refs(list, 'prop')` | That property totalled across every referenced entry |
+| `has_ref(list, 'entry-id')` | Whether the list holds that entry |
+| `count_refs(list)` / `count_refs(list, 'prop', value)` | How many references there are, or how many match |
+
+The character's `_per` notes are layered over the catalog entry - and over a
+freeform entry's own values - so `count_refs(spells, 'prepared')` reads what the
+player set. Before the catalog
+has resolved, these return 0 rather than failing - a sheet renders while its
+entries are still loading.
+
+#### Pack layout
+
+```
+DATA_PATH/character-content/dnd-5e-srd/
+├── _meta.json     ← pack_id, schema_id, licence, source
+├── spell.json     ← an array of entries, named after the content type
+└── class.json
+```
+
+Every entry needs an `_id`; `_source` defaults to the pack's. A pack that sets a
+`license` **must** carry an `attribution`, which Grimoire renders verbatim -
+several open licences mandate exact wording. Loading a pack replaces its entries
+wholesale, so the directory is always the source of truth, and a pack whose
+directory disappears loses its rows on the next scan.
+
+A pack may be installed before anyone has installed the matching sheet; its
+entries are stored as authored until a schema describes them, so install order
+does not matter.
+
+### Rulesets
+
+A **ruleset** is a named set of catalog entries — an SRD, a supplement, a
+table's house rules. Same data shape as pack content, validated against the same
+content type and rendered by the same component. What differs is that a ruleset
+is **editable** and **scoped**, where pack content is neither. Editing an SRD
+entry means **forking** it into a ruleset.
+
+Scope is the point. Two games can run the same system and allow different
+content, which is not something a per-user model can express:
+
+| Kind | `campaign_id` | Who reads it | Who edits it |
+|---|---|---|---|
+| **Campaign** | the campaign | everyone at that table, GM and players | the campaign owner, and admins |
+| **Server** | null | everyone on the instance | admins |
+
+A campaign ruleset is deleted with its campaign — the content existed to serve
+that table. Creating a server ruleset requires admin; creating a campaign one
+requires owning the campaign.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/rulesets` | GET | user | Rulesets this user can read. `schema_id`, `campaign_id` filter |
+| `/api/rulesets` | POST | user | Create one. `campaign_id` null asks for a server ruleset (**admin**) |
+| `/api/rulesets/packs/browse` | GET | user | The community catalogue of content packs, each with `installed`, `installed_version` and `update_available`. Also returns `can_install` for this caller |
+| `/api/rulesets/packs/install/:pack_id` | POST | **admin** | Download and install one pack, then load it into the catalog. Replaces an installed copy, which is how a pack is reinstalled or updated |
+| `/api/rulesets/packs/:pack_id` | DELETE | **admin** | Uninstall a pack: its directory and its rows. Rulesets that imported it keep their copies |
+| `/api/rulesets/installable` | GET | user | Installed content packs that can be imported into a ruleset |
+| `/api/rulesets/:id` | GET | user | One ruleset, if they may read it |
+| `/api/rulesets/:id` | PUT | editor | Rename it or change its credit |
+| `/api/rulesets/:id` | DELETE | editor | Delete it and its entries |
+| `/api/rulesets/:id/export` | GET | user | The whole ruleset as a portable document |
+| `/api/rulesets/:id/import` | POST | editor | Import a `pack_id`, a `document`, or that document as `text` (JSON or YAML). `conflict` is `skip` (default), `overwrite`, or `rename` |
+| `/api/rulesets/:id/fork` | POST | editor | Copy a catalogue or readable ruleset entry into this one |
+| `/api/rulesets/:id/entries` | GET | user | Its entries. `content_type` filters |
+| `/api/rulesets/:id/entries` | POST | editor | Write an entry |
+| `/api/rulesets/:id/entries/:entry_id` | GET | user | One entry, with its `data` |
+| `/api/rulesets/:id/entries/:entry_id` | PUT | editor | Edit an entry |
+| `/api/rulesets/:id/entries/:entry_id` | DELETE | editor | Delete an entry |
+
+"editor" above means whoever may edit that ruleset per the table: the campaign
+owner for a campaign ruleset, an admin for a server one. Everyone else gets 403.
+
+**Ruleset fields:** `id`, `schema_id`, `name`, `description`, `version`,
+`license`, `license_url`, `attribution`, `source_pack_id`, `campaign_id`,
+`campaign_name`, `editable`, `entry_count`, `created_at`, `updated_at`.
+
+**Entry fields:** `id`, `ruleset_id`, `content_type`, `entry_id`, `name`,
+`forked_from`, `editable`, and on detail `data`.
+
+`editable` is computed per caller, so the UI can show a read-only view to a
+player at the table without a second request.
+
+#### Installing the SRD
+
+Core content reaches a table in two steps.
+
+First an admin installs the **pack**, either from the community catalogue
+(`GET /api/rulesets/packs/browse`, then `POST /api/rulesets/packs/install/:id`)
+or by dropping a directory into `DATA_PATH/character-content/`, which is loaded
+at startup. Installing from the catalogue writes the same directory, so the two
+routes converge - the filesystem stays the source of truth. Every file is
+verified against its own digest, and the whole pack is staged and swapped into
+place, so a failed download leaves the previous copy standing.
+
+Browsing needs only an account; **installing needs an admin**, because a pack is
+server-wide. `browse` returns `can_install` for the caller so a GM's UI can show
+what a pack offers without offering a button that would 403.
+
+Then `GET /api/rulesets/installable` lists what is installed, and a GM imports it
+into their campaign's ruleset with `POST /api/rulesets/:id/import` and
+`{"pack_id": "..."}`.
+
+An import **copies the pack's credit onto the ruleset** — `license`,
+`license_url`, `attribution` and `source_pack_id` — so content taken from the
+SRD stays attributed wherever it is shown. Importing a pack built for another
+system is refused (400), as is a `pack_id` that is not installed (404).
+
+#### Forking
+
+`POST /api/rulesets/:id/fork` copies one entry into a ruleset you can edit,
+appending ` (copy)` to its identity field and recording `forked_from` as
+`"<source>:<entry_id>"`. The source may be a pack entry or an entry in any
+ruleset the caller can read, so a table can take a server ruleset's spell and
+change it locally. Forking the same entry twice yields two distinct entry ids
+rather than a conflict.
+
+#### In the catalog
+
+Ruleset content is merged into catalog results and tagged, so "Fireball (SRD)"
+and "Fireball (House Rules)" are told apart: each row carries `ruleset`,
+`ruleset_id` and `ruleset_name`. Pass `include_rulesets=false` to browse pack
+content alone. Characters resolve ruleset references exactly as they resolve
+pack ones, so a formula reading a spell's level does not care where it came
+from.
+
+The FTS index covers pack content; ruleset content is matched in Python on the
+same terms, because it changes on every edit and the readable set is small.
+
+#### Deleting, and dangling references
+
+Deleting an entry leaves characters alone. A reference is soft, so the sheet
+shows it as missing rather than losing the row — the same behaviour as
+uninstalling a pack, and it means a delete can never destroy someone's
+character.
+
+#### Export format
+
+```json
+{ "$schema": "grimoire://ruleset/v1",
+  "name": "House Rules", "schema_id": "dnd-5e-2024", "version": "1.0.0",
+  "entries": { "spell": [ { "_id": "hellfire-blast", "name": "Hellfire Blast" } ] } }
+```
+
+The same shape a filesystem content pack uses, so an exported ruleset can become
+an installed pack. Import defaults to `skip` because an import should not
+silently overwrite someone's work, and returns a tally
+(`imported`/`skipped`/`renamed`/`overwritten`/`failed`) rather than stopping at
+the first conflict, so a partly-overlapping pack still imports what it can.
+
 ### Duplicates *(admin only)*
 
 Finding files that look like copies of one another, and deciding what to do
