@@ -138,7 +138,7 @@ _CONTAINER_SUFFIXES = {
 }
 
 CATEGORY_MAP = {
-    "core": ["core", "core rule", "rulebook", "rules", "phb", "dmg", "mm", "basic", "player", "game master"],
+    "core": ["core", "core rule", "rulebook", "rules", "phb", "dmg", "mm", "basic", "player", "gm", "game master"],
     "supplement": ["supplement", "expansion", "sourcebook", "source", "guide", "companion"],
     "adventure": ["adventure", "module", "campaign", "scenario", "quest"],
     "character-sheet": ["character sheet", "charsheet", "sheet"],
