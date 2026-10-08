@@ -209,7 +209,8 @@ class TestPermissionTable:
         assert api_keys.route_min_role(_route("/api/logs", "GET")) == "admin"
         assert api_keys.route_min_role(_route("/api/books/bulk", "POST")) == "gm"
         assert api_keys.route_min_role(_route("/api/books", "GET")) == "player"
-        assert api_keys.route_min_role(_route("/api/stats", "GET")) == "guest"
+        assert api_keys.route_min_role(_route("/api/stats", "GET")) == "player"
+        assert api_keys.route_min_role(_route("/api/favorites", "GET")) == "guest"
         # Public routes are never a key's to use.
         assert api_keys.route_min_role(_route("/api/health", "GET")) is None
 

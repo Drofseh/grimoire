@@ -50,6 +50,26 @@ def list_favorites(user: CurrentUser = Depends(get_current_user), db: Session = 
     }
     tag_meta = tag_service.tags_meta_for_internals(db, tag_internals)
 
+    if user.role == "guest":
+        # A guest's favourites resolve only to what is shared into their
+        # campaign: favouriting an arbitrary id must not turn this list into a
+        # way to read its name (issue #519). Systems and tags are library
+        # browsing, which guests have no access to at all.
+        from ..campaigns._helpers import user_can_access_resource
+
+        def _shared(rtype: str, found: dict) -> dict:
+            return {
+                k: v for k, v in found.items() if user_can_access_resource(db, user.id, rtype, k)
+            }
+
+        books = _shared("book", books)
+        maps = _shared("map", maps)
+        tokens = _shared("token", tokens)
+        audio = _shared("audio", audio)
+        models = _shared("model", models)
+        systems = {}
+        tag_meta = {}
+
     # Shared tags (display strings) for the media types that surface them.
     map_tags = tag_service.display_tags_for_resources(db, "map", map_ids)
     token_tags = tag_service.display_tags_for_resources(db, "token", token_ids)

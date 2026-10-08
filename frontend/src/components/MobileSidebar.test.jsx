@@ -95,3 +95,46 @@ describe('MobileSidebar', () => {
     expect(screen.queryByRole('button', { name: /more/i })).not.toBeInTheDocument()
   })
 })
+
+describe('MobileSidebar — characters', () => {
+  const renderBar = (props = {}) =>
+    render(
+      <MemoryRouter>
+        <MobileSidebar user={{ role: 'admin' }} onLogout={vi.fn()} uiSettings={{}} {...props} />
+      </MemoryRouter>
+    )
+
+  it('lists Characters in the drawer', async () => {
+    renderBar()
+    await userEvent.click(screen.getByRole('button', { name: /more/i }))
+    expect(screen.getByText('Characters')).toBeInTheDocument()
+    // Rulesets are reached from within Characters, not from the drawer.
+    expect(screen.queryByText('Rulesets')).not.toBeInTheDocument()
+  })
+
+  it('hides maps, tokens and models when their settings are set', async () => {
+    renderBar({ uiSettings: { hide_maps: true, hide_tokens: true, hide_models: true } })
+    await userEvent.click(screen.getByRole('button', { name: /more/i }))
+    expect(screen.queryByText('Maps')).not.toBeInTheDocument()
+    expect(screen.queryByText('Tokens')).not.toBeInTheDocument()
+    expect(screen.queryByText('Models')).not.toBeInTheDocument()
+    // The ones that are not hidden remain.
+    expect(screen.getByText('Audio')).toBeInTheDocument()
+  })
+
+  it('closes the drawer when a link in it is chosen', async () => {
+    renderBar()
+    await userEvent.click(screen.getByRole('button', { name: /more/i }))
+    await userEvent.click(screen.getByText('Characters'))
+    expect(screen.queryByText('Audio')).not.toBeInTheDocument()
+  })
+
+  it('hides characters when campaigns are hidden', async () => {
+    // Characters sit with Campaigns rather than carrying their own toggle, so
+    // the one setting governs both.
+    renderBar({ uiSettings: { hide_campaigns: true } })
+    await userEvent.click(screen.getByRole('button', { name: /more/i }))
+    expect(screen.queryByText('Campaigns')).not.toBeInTheDocument()
+    expect(screen.queryByText('Characters')).not.toBeInTheDocument()
+  })
+})

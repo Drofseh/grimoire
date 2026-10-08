@@ -4,11 +4,14 @@ import MediaFolderGroup from './MediaFolderGroup'
 import MediaCard from './MediaCard'
 import VirtualGrid from './VirtualGrid'
 import BulkActionBar from '../BulkActionBar'
+import LoadMoreSentinel from '../LoadMoreSentinel'
+import Spinner from '../Spinner'
 import BulkToggleButton from '../BulkToggleButton'
 import ViewModeToggle from '../ViewModeToggle'
 import SortFilterBar from '../library/SortFilterBar'
 import SearchInput from '../library/SearchInput'
-import useTagLabels, { titleCaseTag } from '../../hooks/useTagLabels'
+import { titleCaseTag } from '../../hooks/useTagLabels'
+import { RECENTLY_ADDED_DAYS } from '../../utils/recentlyAdded'
 
 /**
  * Page layout shared by the media gallery views (maps, tokens). Renders the
@@ -35,14 +38,20 @@ export default function GalleryLayout({
   const { i18n, icon: Icon, emptyKey, emptyFilterKey } = config
   const { bulkMode } = gallery.bulk
 
-  const sortOptions = (config.sortOptions || ['name', 'size']).map((key) => ({
-    value: key,
-    label: t(`sortFilter.sort${key.charAt(0).toUpperCase()}${key.slice(1)}`),
-  }))
+  // Every gallery can sort by date added (issue #199), newest first on pick.
+  // Snake-case keys map to camel-case labels: `added_at` -> `sortAddedAt`.
+  const sortOptions = [...(config.sortOptions || ['name', 'size']), 'added_at'].map((key) => {
+    const camel = key.replace(/_(\w)/g, (_, c) => c.toUpperCase())
+    return {
+      value: key,
+      label: t(`sortFilter.sort${camel.charAt(0).toUpperCase()}${camel.slice(1)}`),
+      ...(key === 'added_at' ? { defaultOrder: 'desc' } : null),
+    }
+  })
   // Tag filter options: values are the internal (lowercased) keys the gallery
   // matches on; labels use the shared-tag display casing when available, falling
   // back to Title Case for folder-only tags not in the shared-tag tables (#235).
-  const tagLabels = useTagLabels(config.type)
+  const tagLabels = gallery.tagLabels || {}
   const tagOptions = gallery.allTags.map((tg) => ({
     value: tg,
     label: tagLabels[tg] || titleCaseTag(tg),
@@ -131,6 +140,11 @@ export default function GalleryLayout({
           ]}
           toggleFilters={[
             { key: 'favorites', label: t('sortFilter.filterFavorites'), boolean: true },
+            {
+              key: 'recent',
+              label: t('sortFilter.filterRecent', { days: RECENTLY_ADDED_DAYS }),
+              boolean: true,
+            },
           ]}
           saved={gallery.savedFilters.saved}
           onSavePreset={handleSavePreset}
@@ -179,29 +193,44 @@ export default function GalleryLayout({
                 onToggleItem={gallery.toggleSelect}
                 onToggleFolder={gallery.bulk.toggleFolder}
                 onDownload={onDownload}
+                onLoadFolder={gallery.loadFolder}
+                onFetchFolderItems={gallery.fetchFolderItems}
               />
             ))
           : gallery.flatItems.length > 0 && (
-              <VirtualGrid
-                items={gallery.flatItems}
-                minColumn={parseInt(config.gridMin[gallery.cardSize], 10)}
-                gap={gallery.list ? 8 : config.gridGap}
-                list={gallery.list}
-                renderItem={(item) => (
-                  <MediaCard
-                    key={item.id}
-                    config={config}
-                    item={item}
-                    bulkMode={bulkMode}
-                    selected={gallery.selectedIds?.has(item.id)}
-                    onToggle={(mods) => gallery.toggleSelect(item.id, mods)}
-                    list={gallery.list}
-                  />
+              <>
+                <VirtualGrid
+                  items={gallery.flatItems}
+                  minColumn={parseInt(config.gridMin[gallery.cardSize], 10)}
+                  gap={gallery.list ? 8 : config.gridGap}
+                  list={gallery.list}
+                  renderItem={(item) => (
+                    <MediaCard
+                      key={item.id}
+                      config={config}
+                      item={item}
+                      bulkMode={bulkMode}
+                      selected={gallery.selectedIds?.has(item.id)}
+                      onToggle={(mods) => gallery.toggleSelect(item.id, mods)}
+                      list={gallery.list}
+                    />
+                  )}
+                />
+                {/* The flat list pages in as its end scrolls near (issue #221). */}
+                {gallery.flatLoading && (
+                  <div style={{ display: 'flex', justifyContent: 'center', padding: 16 }}>
+                    <Spinner size={20} />
+                  </div>
                 )}
-              />
+                <LoadMoreSentinel
+                  active={gallery.flatHasMore && !gallery.flatLoading}
+                  count={gallery.flatItems.length}
+                  onVisible={gallery.loadMoreFlat}
+                />
+              </>
             )}
 
-        {gallery.noFolders && (
+        {gallery.noItems && (
           <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-muted)' }}>
             <Icon size={48} style={{ marginBottom: 16, opacity: 0.3 }} />
             <p>

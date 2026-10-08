@@ -18,10 +18,13 @@ from ...indexer.models3d import (
     viewer_oversized,
 )
 from ...models import Model3D, Model3DFolder
+from ...models.base import utc_iso
 from ...services import bulk_service, tag_service, variants
+from ...services.browse.media import MediaBrowse, MediaBrowser
 from ...services.content_cache import content_token
+from .._browse import media_browse_params
 from .._bulk_schemas import BulkAddTags, BulkFolderTags
-from .._media_access import assert_media_access
+from .._media_access import assert_media_access, guest_visible_variants
 from ._helpers import _allow_explicit
 from ._schemas import FolderTagsUpdate, Model3DBulkUpdate, Model3DUpdate
 
@@ -31,15 +34,16 @@ router = APIRouter()
 def list_models(
     limit: int = Query(100000),
     offset: int = 0,
+    params: MediaBrowse = Depends(media_browse_params),
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    can_see_explicit = _allow_explicit(db, current_user.id)
-    q = variants.parents_only(db.query(Model3D), Model3D)
-    if not can_see_explicit:
-        q = q.filter(Model3D.is_explicit != True)
-    total = q.count()
-    rows = q.order_by(Model3D.filename).offset(offset).limit(limit).all()
+    # Filtering, ordering and the folder scope all run in SQL (issue #221); see
+    # services/browse/media.py.
+    browser = MediaBrowser(
+        db, "model", current_user.id, hide_explicit=not _allow_explicit(db, current_user.id)
+    )
+    total, rows = browser.page(params, limit, offset)
     model_tags = tag_service.display_tags_for_resources(db, "model", [m.id for m in rows])
     vcounts = variants.variant_counts(db, Model3D, [m.id for m in rows])
     vkinds = variants.variant_kinds(db, Model3D, [m.id for m in rows])
@@ -63,10 +67,24 @@ def list_models(
                 # Tri-state flattened to two booleans — see the note on Model3DOut.
                 "is_presupported": m.is_supported is True,
                 "is_unsupported": m.is_supported is False,
+                "added_at": utc_iso(m.added_at),
             }
             for m in rows
         ],
     }
+
+
+def list_model_groups(
+    params: MediaBrowse = Depends(media_browse_params),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Every folder holding rows that match the filters, with how many."""
+    browser = MediaBrowser(
+        db, "model", current_user.id, hide_explicit=not _allow_explicit(db, current_user.id)
+    )
+    total, groups = browser.groups(params)
+    return {"total": total, "groups": groups}
 
 
 def list_model_folders(db: Session = Depends(get_db)):
@@ -105,6 +123,7 @@ def get_model(
 
     is_archive = bool(archive_ext(m.filename))
     variant_parent, siblings = variants.family_for(db, Model3D, m)
+    siblings = guest_visible_variants(db, current_user, "model", m.id, siblings)
     return {
         "id": m.id,
         "filename": m.filename,
@@ -118,6 +137,7 @@ def get_model(
         "has_thumbnail": m.has_thumbnail,
         "is_explicit": bool(m.is_explicit),
         "is_missing": bool(m.is_missing),
+        "added_at": utc_iso(m.added_at),
         "is_archive": is_archive,
         "is_supported": m.is_supported,
         "is_presupported": m.is_supported is True,

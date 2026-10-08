@@ -125,21 +125,31 @@ describe('GalleryLayout', () => {
   })
 
   it('renders the empty state when there are no folders', () => {
-    const gallery = makeGallery({ noFolders: true, folderEntries: [] })
+    const gallery = makeGallery({ noFolders: true, noItems: true, folderEntries: [] })
     render(<GalleryLayout {...baseProps({ gallery })} />)
     expect(screen.queryByTestId('folder-group')).not.toBeInTheDocument()
     expect(screen.getByText(/No maps found/i)).toBeInTheDocument()
   })
 
   it('shows a filtered empty message when a filter is active', () => {
-    const gallery = makeGallery({ noFolders: true, folderEntries: [], filter: 'goblin' })
+    const gallery = makeGallery({
+      noFolders: true,
+      noItems: true,
+      folderEntries: [],
+      filter: 'goblin',
+    })
     render(<GalleryLayout {...baseProps({ gallery })} />)
     expect(screen.queryByTestId('folder-group')).not.toBeInTheDocument()
     expect(screen.getByText(/No maps match your filter/i)).toBeInTheDocument()
   })
 
   it('shows the no-favourites message when favOnly is on and nothing matches', () => {
-    const gallery = makeGallery({ noFolders: true, folderEntries: [], favOnly: true })
+    const gallery = makeGallery({
+      noFolders: true,
+      noItems: true,
+      folderEntries: [],
+      favOnly: true,
+    })
     render(<GalleryLayout {...baseProps({ gallery })} />)
     expect(screen.getByText(/no favorites here yet/i)).toBeInTheDocument()
   })
@@ -150,6 +160,27 @@ describe('GalleryLayout', () => {
     const bar = screen.getByTestId('sort-filter-bar')
     expect(bar).toHaveStyle({ position: 'sticky', top: '0px' })
     expect(within(bar).getByRole('button', { name: /select/i })).toBeInTheDocument()
+  })
+
+  it('offers a date-added sort that picks newest first', () => {
+    const gallery = makeGallery()
+    render(<GalleryLayout {...baseProps({ gallery })} />)
+    const select = screen.getByRole('combobox', { name: 'Sort' })
+    expect(within(select).getByRole('option', { name: 'Date added' })).toBeInTheDocument()
+    fireEvent.change(select, { target: { value: 'added_at' } })
+    expect(gallery.setSortFilter).toHaveBeenCalledWith(
+      expect.objectContaining({ sort: 'added_at', order: 'desc' })
+    )
+  })
+
+  it('offers a recently-added filter', () => {
+    const gallery = makeGallery()
+    render(<GalleryLayout {...baseProps({ gallery })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
+    fireEvent.click(screen.getByLabelText('Recently added (last 7 days)'))
+    expect(gallery.setSortFilter).toHaveBeenCalledWith(
+      expect.objectContaining({ filters: expect.objectContaining({ recent: true }) })
+    )
   })
 
   it('enters bulk mode from the toolbar select button', () => {

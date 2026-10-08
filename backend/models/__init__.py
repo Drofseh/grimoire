@@ -8,6 +8,8 @@ from .access import UserAccessGrant
 from .api_keys import ApiKey
 from .audio_sets import SET_TYPES, AudioSet
 from .base import Base
+from .characters import Character, CharacterSchema
+from .content import ContentEntry, ContentPack, Ruleset, RulesetEntry
 from .campaigns import (
     Campaign,
     CampaignCategory,
@@ -52,6 +54,9 @@ from .settings import AppSetting
 from .tags import RESOURCE_TYPES, SHARED_CATEGORY, TAG_CATEGORIES, ResourceTag, Tag
 from .variants import VARIANT_KINDS, VARIANT_KINDS_BY_TYPE, kinds_for
 from .users import AuthSession, Bookmark, Favorite, SavedFilter, User, UserTheme
+from .browse import register_sort_key_events
+
+register_sort_key_events([GenericMap, Token, Audio, Model3D], Book)
 
 __all__ = [
     "Base",
@@ -92,6 +97,14 @@ __all__ = [
     # Saved audio sets
     "AudioSet",
     "SET_TYPES",
+    # Characters
+    "CharacterSchema",
+    "Character",
+    # Character content catalog
+    "ContentPack",
+    "ContentEntry",
+    "Ruleset",
+    "RulesetEntry",
     # Campaigns
     "Campaign",
     "CampaignMember",

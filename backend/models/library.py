@@ -216,8 +216,37 @@ class Book(Base):
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    # When the book first appeared in the library (issue #199) - what the "new"
+    # badge, the date-added sort and the "recently added" filter read. Set once
+    # on insert; a move or an in-place file replacement keeps the original row
+    # and so keeps this too. NULL for the library's first import, so a fresh
+    # install does not badge everything as new (``indexer.added_dates``), and
+    # for a legacy row with no ``created_at`` for migration 0040 to backfill.
+    added_at = Column(DateTime, nullable=True, default=_utcnow, index=True)
 
-    __table_args__ = (Index("ix_books_indexer_queue", "indexed", "mime_type"),)
+    # Natural-order title key and the book's directory, kept in step by
+    # models/browse.py for paged browsing (issue #221).
+    sort_title = Column(String(600), nullable=True)
+    folder_path = Column(String(1000), nullable=True)
+
+    __table_args__ = (
+        Index("ix_books_indexer_queue", "indexed", "mime_type"),
+        # Paged browsing of one system's shelf (issue #221). ``folder`` serves
+        # the category/subfolder grouping and listing one folder; ``title`` the
+        # default sort of the flat list. The rarer sorts (year, pages, size)
+        # order one system's books in memory, which stays cheap.
+        Index(
+            "ix_books_browse_folder",
+            "game_system_id",
+            "variant_parent_id",
+            "category",
+            "folder_path",
+            "sort_title",
+        ),
+        Index("ix_books_browse_title", "game_system_id", "variant_parent_id", "sort_title"),
+        # "Is this id a live parent?" from the index alone (tag_service.live_links).
+        Index("ix_books_live", "id", "variant_parent_id"),
+    )
 
     game_system = relationship("GameSystem", back_populates="books")
 

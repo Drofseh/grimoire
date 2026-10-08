@@ -318,6 +318,25 @@ describe('ReaderView — spread mode (integration)', () => {
     expect(JSON.parse(localStorage.getItem('grimoire:book:book-1')).spreadOffset).toBe(0)
   })
 
+  it('opens on the last page when the saved page is past the end of the book', async () => {
+    // The file was replaced by a shorter one since the page was saved (#497).
+    localStorage.setItem('grimoire:book:book-1', JSON.stringify({ page: 250 }))
+    renderReader()
+    await waitFor(() => screen.getByText('Test Book'))
+    await waitForReaderIdle()
+
+    expect(screen.getByLabelText('Current page number')).toHaveValue('100')
+  })
+
+  it('keeps a saved page that is still inside the book', async () => {
+    localStorage.setItem('grimoire:book:book-1', JSON.stringify({ page: 42 }))
+    renderReader()
+    await waitFor(() => screen.getByText('Test Book'))
+    await waitForReaderIdle()
+
+    expect(screen.getByLabelText('Current page number')).toHaveValue('42')
+  })
+
   it('restores spreadOffset from localStorage on mount', async () => {
     localStorage.setItem(
       'grimoire:book:book-1',
@@ -546,6 +565,19 @@ describe('ReaderView — mobile panel layout', () => {
     // Toggling the same panel button closes it.
     await userEvent.click(screen.getByTitle('Contents'))
     await waitFor(() => expect(pageContainer()).toHaveStyle({ display: 'flex' }))
+  })
+
+  // `main` is a flex column that can also hold the pending-invites banner, so a
+  // reader sized `height: 100%` overflowed it and the foot of the page slid
+  // under the mobile nav (issue #520). It takes the space left over instead.
+  it('sizes the reader to the space left in main rather than 100% of it', async () => {
+    renderReader()
+    await waitFor(() => screen.getByText('Test Book'))
+    await waitForReaderIdle()
+
+    const root = document.querySelector('.fade-in')
+    expect(root).toHaveStyle({ flex: '1', minHeight: '0' })
+    expect(root.style.height).toBe('')
   })
 
   it('keeps the page beside the panel on a desktop', async () => {

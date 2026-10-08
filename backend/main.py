@@ -42,6 +42,9 @@ from .routers import (
     bookmarks as bookmarks_router,
     books as books_router,
     campaigns as campaigns_router,
+    characters as characters_router,
+    content as content_router,
+    rulesets as rulesets_router,
     downloads as downloads_router,
     favorites as favorites_router,
     files as files_router,
@@ -217,6 +220,18 @@ async def lifespan(app: FastAPI):
             logger.info("Scanning your library…")
             logger.debug(f"Library path: {LIBRARY_PATH}")
             run_rescan_sync()
+
+            # Character content packs are server-wide and read from disk, so
+            # they are refreshed alongside the library rather than on demand.
+            from .services.characters import packs as character_packs
+
+            db = SessionLocal()
+            try:
+                character_packs.sync_packs(db)
+            except Exception as e:
+                logger.error(f"Couldn't load character content packs: {e}")
+            finally:
+                db.close()
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
             lock_file.close()
@@ -368,6 +383,9 @@ api.include_router(settings_router.router)
 api.include_router(api_keys_router.router)
 api.include_router(addons_router.router)
 api.include_router(themes_router.router)
+api.include_router(characters_router.router)
+api.include_router(content_router.router)
+api.include_router(rulesets_router.router)
 api.include_router(duplicates_router.router)
 api.include_router(maintenance_router.router)
 api.include_router(backups_router.router)

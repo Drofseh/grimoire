@@ -258,3 +258,12 @@ def _assert_book_access(db, book: Book, user) -> None:
 
     if book.is_explicit and not _allow_explicit(db, user.id):
         raise HTTPException(403, "Explicit content is disabled for your account")
+
+
+def _can_read_book(db, book: Book, user) -> bool:
+    """`_assert_book_access` as a predicate, for filtering lists of books."""
+    try:
+        _assert_book_access(db, book, user)
+    except HTTPException:
+        return False
+    return True

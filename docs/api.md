@@ -258,7 +258,7 @@ environment:
 | `/api/users/guests` | GET | admin | List every per-campaign guest account. Each entry: `{id, display_name, created_at, campaign_id, campaign_name, invited_by}` (`invited_by` is the campaign owner's display name/username). Guests never appear in `GET /api/users`. |
 | `/api/users/:id` | PATCH | admin | Update `role`, `password`, `allow_explicit`, `campaign_access`, `api_keys_enabled`, or `email` (use `""` to clear the email). `api_keys_enabled` lets a non-admin hold [API keys](#api-keys) (admins always may); OIDC's `apiKeys` permissions claim overrides it on next login. `campaign_access: false` blocks the user from creating/joining/managing campaigns without deleting existing ones; OIDC's `campaignAccess` permissions claim overrides it on next login. Changing a GM's role **drops their access grants** - see [Access levels](#access-levels-issue-258). |
 | `/api/users/:id/convert` | POST | admin | Convert a guest account to a permanent user. Body: `{username, password?, role?}` (role defaults to `player`, cannot be `guest`). `password` is required only when password auth is enabled; ≥8 chars. Keeps the guest's campaign membership and character, clears its invite code, and returns the promoted user. 400 if the target isn't a guest or the username is taken. |
-| `/api/users/:id/merge` | POST | admin | Fold one or more guest accounts into the account at `:id`, so someone invited to several campaigns ends up with a single login. Body: `{source_ids: [...]}` (non-empty, no duplicates, cannot contain `:id`). Moves each source's campaign memberships, notes, characters, and personal rows onto the target, then deletes the emptied sources and ends their sessions. Merged-in memberships have their invite code cleared - campaign access comes from the membership itself, so the person keeps every campaign and uses the surviving account's credentials. Rows that would collide (target is already in that campaign) are dropped in favour of the target's. Sources must be guests; the target may be a guest or a permanent user. Returns `{id, display_name, merged_ids, memberships_moved}`. 400 if a source isn't a guest or `:id` is among the sources, 404 if the target or any source is missing. |
+| `/api/users/:id/merge` | POST | admin | Fold one or more guest accounts into the account at `:id`, so someone invited to several campaigns ends up with a single login. Body: `{source_ids: [...]}` (non-empty, no duplicates, cannot contain `:id`). Moves each source's campaign memberships, notes, character-builder characters, installed sheets, personal rulesets, and other personal rows onto the target, then deletes the emptied sources and ends their sessions. Merged-in memberships have their invite code cleared - campaign access comes from the membership itself, so the person keeps every campaign and uses the surviving account's credentials. Rows that would collide (target is already in that campaign, or has that sheet installed) are dropped in favour of the target's. Sources must be guests; the target may be a guest or a permanent user. Returns `{id, display_name, merged_ids, memberships_moved}`. 400 if a source isn't a guest or `:id` is among the sources, 404 if the target or any source is missing. |
 | `/api/users/:id` | DELETE | admin | Delete a user (cannot delete self or last admin). Also the way to remove a guest account, including one orphaned by its campaign's deletion (null `campaign_id`/`invited_by`). |
 | `/api/users/:id/access-grants` | GET | admin | List this user's library access grants. Each: `{id, user_id, scope_type, scope_id, scope_name, level}`. `scope_name` is `""` when the granted system/book has since been deleted. |
 | `/api/users/:id/access-grants` | POST | admin | Grant access to one restricted system or book. Body: `{scope_type: "system"\|"book", scope_id, level: "gm"\|"admin"}`. Only **GMs** may hold grants (400 otherwise) - admins already see everything and players cannot be granted past a restriction. Re-granting an existing scope updates its level rather than erroring. 404 if the target system/book does not exist. See [Access levels](#access-levels-issue-258). |
@@ -271,13 +271,13 @@ environment:
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/stats` | GET | any, or an API key with `stats` | Counts, page totals, library size. Tagged `stats` rather than `library`, so a dashboard key needs nothing else. |
+| `/api/stats` | GET | any (not guest), or an API key with `stats` | Counts, page totals, library size. Tagged `stats` rather than `library`, so a dashboard key needs nothing else. |
 | `/api/about` | GET | any | Build info for the About dialog: `{version, commit_hash, python_version}`. Deliberately **not** exposed on `/api/stats`, so a `stats`-only key can't read these details. |
 | `/api/changelog` | GET | any (JWT) | Parsed `CHANGELOG.md` for the About dialog: `{releases: [{version, date, summary, sections: [{title, entries}]}]}`, newest release first. `date` and `summary` are `null` when the release heading carries neither (an `Unreleased` section has no date). `releases` is empty when the image ships without a changelog, which the dialog renders as no changelog section rather than an error. Parsed once and cached for the process lifetime - the file cannot change under a running container. |
 | `/api/latest-release` | GET | any (JWT) | Latest published release for the update-available check: `{latest_version}` (or `null`). Proxies GitHub's releases API server-side (cached ~1h) so the browser makes a same-origin request that request blockers won't block. Returns `null` when `DISABLE_VERSION_CHECKING` is set or GitHub is unreachable. |
-| `/api/scan-status` | GET | admin | Current scan state. `phase` is `scanning` (file walk), `indexing` (text-layer extraction), or `ocr` (deferred OCR of scanned/image-only PDFs). During the `ocr` phase, `total_ocr`/`ocr_done`/`ocr_current` report the OCR queue's progress. |
-| `/api/rescan` | POST | admin | Trigger a background rescan and reindex (optionally scoped, with a metadata-refresh mode) |
-| `/api/cancel-scan` | POST | admin | Request a graceful stop of the running scan or indexing job |
+| `/api/scan-status` | GET | admin | Current scan state. `phase` is `scanning` (file walk), `indexing` (text-layer extraction), or `ocr` (deferred OCR of scanned/image-only PDFs). During the `ocr` phase, `total_ocr`/`ocr_done`/`ocr_current` report the OCR queue's progress. `heartbeat` is the last time the running scan showed signs of life (ISO 8601, UTC) - it advances at least every 30 seconds while the scan is alive and stops when its process dies |
+| `/api/rescan` | POST | admin | Trigger a background rescan and reindex (optionally scoped, with a metadata-refresh mode). A scan left stuck by a dead process does not block it |
+| `/api/cancel-scan` | POST | admin | Request a graceful stop of the running scan or indexing job, or clear one whose process died (`cleared_stale`) |
 
 **Stats response:**
 ```json
@@ -392,6 +392,8 @@ Returns `{"status": "scan_started"}`, or `{"status": "already_running"}` if a sc
 ```
 Returns `{"status": "not_running"}` if no scan is in progress. Cancellation is cooperative - the running scan checks for the stop signal after each file and exits at the next safe checkpoint. Poll `/api/scan-status` until `running` is `false` to confirm it has stopped.
 
+Returns `{"status": "cleared_stale"}` when the status claimed a scan was running but its `heartbeat` had not moved for five minutes: the process behind it died before it could clear its own status (issue #524), so there is no thread left to notice a stop request. The status is reset on the spot and `running` is `false` immediately. Rescans, single-book rescans, the OCR trigger, cleanup, sidecar export, and duplicate detection likewise treat such a status as not running rather than refusing.
+
 ### Bulk operations
 
 Every bulk-editable collection (`books`, `systems`, `maps`, `tokens`, `audio`, `models`)
@@ -428,15 +430,18 @@ must be non-empty (`422` otherwise).
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/api/systems` | GET | any | List all systems with book counts, `total_page_count`, and metadata. Query: `sort` (`name`\|`book_count`\|`page_count`\|`year`), `order` (`asc`\|`desc`), `genre`, `family`, `parent_system`, `edition`, `license`, `explicit` (bool), `parent_id` (list one container's children), `include_children` (bool; flat list including nested systems) |
-| `/api/systems/:id` | GET | any | System detail + full book list, plus `children` (the nested systems when this is a container). Query: `book_sort` (`category`\|`title`\|`page_count`\|`year`), `book_order`, `explicit` (bool), `genre`, `category` filter the returned books |
+| `/api/systems/:id` | GET | any | System detail + full book list, plus `children` (the nested systems when this is a container) and `scope_path` (the system's own folder, `books/{System}`, for a scoped rescan; `null` with no books). Query: `book_sort` (`category`\|`title`\|`page_count`\|`year`), `book_order`, `explicit` (bool), `genre`, `category` filter the returned books. `include_books=false` returns the summary alone (`books: []`, counts and cover computed in SQL) - what the detail view asks for, paging the shelf through the three routes below |
+| `/api/systems/:id/books` | GET | any (not guest) | One page of the system's books matching the [shelf filters](#browsing-a-systems-shelf). Query: the filters, plus `category` and `folder` (one folder of the grouped shelf; `""` is the category's own directory, and `folder` needs `category`), `sort` (`title`\|`year`\|`page_count`\|`size`\|`product_code`\|`added_at`), `order`, `limit` (max 500), `offset`. Returns `{total, books}` |
+| `/api/systems/:id/book-groups` | GET | any (not guest) | Every category and subfolder holding matching books: `{total, groups: [{category, path, dir, count, first}]}`. `path` is the subfolder below the category directory (`""` for books directly in it), `dir` the library directory (for rescan scopes), `first` the active sort's value for the folder's first book (`null` for the title sort) |
+| `/api/systems/:id/book-facets` | GET | any (not guest) | The filter menus' options over every book the caller may see: `{categories, genres, product_code_prefixes, tags}` |
 | `/api/systems/:id` | PATCH | gm/admin | Update metadata (see fields below) |
 | `/api/systems/bulk` | POST | gm/admin | Bulk update. Body: `{items: [{id, ...PATCH fields}]}`. A name clash fails only that item |
 | `/api/systems/bulk/tags` | POST | gm/admin | Bulk **add** tags. Body: `{ids, tags}` |
-| `/api/systems/:id/cover` | GET | any | Serves the system's folder cover art or uploaded cover image. 404 when it has neither |
+| `/api/systems/:id/cover` | GET | any (not guest) | Serves the system's folder cover art or uploaded cover image. 404 when it has neither |
 | `/api/systems/:id/cover` | POST | gm/admin | Upload a cover image (multipart `file`). PNG/JPEG/WebP/GIF, max 10 MB |
 | `/api/systems/:id/cover/from-source` | POST | gm/admin | Set the cover from an image Grimoire already holds. Body: `{source_type, source_id}` - see [Setting an image from an existing asset](#setting-an-image-from-an-existing-asset) |
 | `/api/systems/:id/cover` | DELETE | gm/admin | Remove the uploaded cover. Folder art is library-managed and unaffected |
-| `/api/systems/:id/book-folders` | GET | any | Book subcategory folders for this system and their tags. Returns `{folders: [{path, tags}]}` |
+| `/api/systems/:id/book-folders` | GET | any (not guest) | Book subcategory folders for this system and their tags. Returns `{folders: [{path, tags}]}` |
 | `/api/systems/:id/book-folders` | PATCH | gm/admin | Create or replace a folder's tag list. Body `{path, tags}`. `path` must be `{system_id}/{category}/{subfolder…}` for this system - 400 otherwise |
 | `/api/systems/:id/book-folders` | DELETE | gm/admin | Delete a folder row and its tags. Query: `path` (same grammar as PATCH). 404 when no such row |
 
@@ -503,7 +508,7 @@ does not support pasting, and a request with neither `identity` nor `paste`.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/books` | GET | any | Paginated book list. Query: `system_id`, `category`, `limit` (max 500, default 100), `offset` |
+| `/api/books` | GET | any | Paginated book list. Query: `system_id`, `category`, `limit` (max 500, default 100), `offset`, `sort` (`title` - the default - or `added_at`), `order` (`asc`/`desc`; defaults to A-Z for `title` and newest first for `added_at`), `added_since` (ISO-8601; see below) |
 | `/api/books/:id` | GET | any | Book detail with game system |
 | `/api/books/:id` | PATCH | gm/admin | Update: `title`, `category`, `description`, `authors`, `artists`, `genres`, `publisher`, `publisher_url` (legacy), `urls`, `isbn`, `product_code`, `version`, `language`, `license`, `year`, `month` (1–12), `day` (1–31), `tags`, `is_explicit`, `access_level` (**admin only**). `license` overrides the system license for this book (blank inherits it). Changing `category` also **moves the file** - see below. `file_size`/`page_count`/`mime_type` are read-only. Sending `access_level` as a non-admin returns 403 - see [Access levels](#access-levels-issue-258). |
 | `/api/books/bulk` | POST | gm/admin | Bulk update. Body: `{items: [{id, ...PATCH fields}]}` |
@@ -512,14 +517,25 @@ does not support pasting, and a request with neither `identity` nor `paste`.
 | `/api/books/:id/rescan` | POST | gm/admin | Re-read a single book from disk and rebuild its search index, for a file edited externally. Unlike `/reindex` this works for any indexable format (PDF, EPUB, DjVu, `.txt`/`.md`/`.rtf`): a text-layer book is re-extracted and its FTS rows rebuilt; an image-only PDF is re-queued for OCR. Refreshes page count and cover thumbnail if the file changed, and drops everything cached from the previous contents (page renders, open document handle, search rows). Runs in the background (poll `/api/scan-status`); no-ops if a library scan is already running. 400 for formats that cannot be indexed (archives, images), 404 if the file is missing on disk. Returns `{status: "rescan_queued"}`. |
 | `/api/books/:id/file` | GET | any | Download/stream the file |
 | `/api/books/:id/thumbnail` | GET | any | WebP cover thumbnail. Sends an `ETag` derived from the file's content hash and honours `If-None-Match` (`304`), so a replaced cover is picked up despite the `immutable` cache policy. |
-| `/api/books/:id/toc` | GET | any | Table of contents as `{title, page, level, children}[]`. Available for PDF, EPUB, and DjVu; other formats 404 |
+| `/api/books/:id/toc` | GET | any | Table of contents as `{title, page, level, children}[]`. Available for PDF, EPUB, and DjVu; other formats 404. `page` is 1-based, or `-1` for an entry whose destination can't be resolved - a broken PDF bookmark costs only its own link, not the whole TOC, and one pointing just past the last page resolves to the last page |
 | `/api/books/:id/page/:num` | GET | any | Render a document page (PDF/EPUB/DjVu) as WebP. Comic archives (`.cbz`/`.cbr`/`.cb7`/`.cbt`) return the stored page image from inside the archive as-is; single-image books return the file and accept only page 1; text books 404 (no rendered page). Query: `width` (default 1200, max 3000), `v` (the book's `content_token`, cache-busting; ignored server-side). Cached under a content-addressed key, so replacing the file supersedes earlier renders. Sends an `ETag` and honours `If-None-Match` (`304`). |
 | `/api/books/:id/page/:num/text` | GET | any | Plain text of a page (from FTS index or live extraction). Serves any indexable format - PDF, EPUB, DjVu, and `.txt`/`.md`/`.rtf` |
 | `/api/books/:id/page/:num/words` | GET | any | Word bounding boxes `{x0, y0, x1, y1, text}` for text overlay. Only rendered documents have page geometry; comics and text books return an empty overlay |
 
 **Book list response:** `{"total": int, "books": [...]}`
 
-**Access control on by-id routes:** `GET /api/books` (the library browse) is blocked for guests, but the by-id content routes (`:id`, `:id/file`, `:id/thumbnail`, `:id/toc`, `:id/page/...`) are reachable by any authenticated user and enforce access themselves. Guests may only read a book **shared into a campaign they belong to** (via a `CampaignResource` whose visibility permits them); an unshared or `gm`-only book returns 403. For non-guests, an `is_explicit` book returns 403 when the caller has `allow_explicit` disabled - the file/page routes enforce this the same way `GET /api/books/:id` does. A book deliberately shared into a guest's campaign is served regardless of its explicit flag (guests have no NSFW preference of their own).
+**Date added (issue #199):** every book row - here, on `GET /api/books/:id`, and in
+`GET /api/systems/:id` - carries `added_at`, an ISO-8601 UTC timestamp of when the book
+first appeared in the library. A move or an in-place file replacement keeps the
+original date. It is `null` for books from the library's first import (so a fresh
+install does not flag its whole library as new) and for legacy rows with no date to
+backfill; such books sort last in either direction and never match `added_since`. To poll for new
+additions, request `sort=added_at&added_since=<last poll>` - `total` reflects the
+filter, so the result pages normally. A timestamp without an offset is read as UTC.
+The map, token, audio and 3D model list and detail rows carry `added_at` too (the map
+detail route does not); those galleries sort and filter on it client-side.
+
+**Access control on by-id routes:** `GET /api/books` (the library browse) is blocked for guests, but the by-id content routes (`:id`, `:id/file`, `:id/thumbnail`, `:id/toc`, `:id/page/...`) are reachable by any authenticated user and enforce access themselves. Guests may only read a book **shared into a campaign they belong to** (via a `CampaignResource` whose visibility permits them); an unshared or `gm`-only book returns 403 (404 from `GET /api/books/:id`, so its title is not disclosed). The `variants` list on `GET /api/books/:id` is trimmed for a guest to the variants they may read. For non-guests, an `is_explicit` book returns 403 when the caller has `allow_explicit` disabled - the file/page routes enforce this the same way `GET /api/books/:id` does. A book deliberately shared into a guest's campaign is served regardless of its explicit flag (guests have no NSFW preference of their own).
 
 #### Access levels (issue #258)
 
@@ -592,19 +608,19 @@ each section is collapsible.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/genres` | GET | any | `{"genres": [{id, name, parent_id, is_default, sort_order}]}`. Tiered via `parent_id` (e.g. Cyberpunk → Science Fiction). |
+| `/api/genres` | GET | any (not guest) | `{"genres": [{id, name, parent_id, is_default, sort_order}]}`. Tiered via `parent_id` (e.g. Cyberpunk → Science Fiction). |
 | `/api/genres` | POST | admin | Create a genre. Body `{name, parent_id?}`. 409 if the name exists. |
 | `/api/genres/:id` | DELETE | admin | Delete a genre (and its children). 409 with `{detail: {message, name, usage_count}}` if attached to a system/book, unless `?force=true`. |
-| `/api/system-families` | GET | any | `{"families": [{id, name, is_default, sort_order}]}` |
+| `/api/system-families` | GET | any (not guest) | `{"families": [{id, name, is_default, sort_order}]}` |
 | `/api/system-families` | POST | admin | Create a family. Body `{name}`. 409 if the name exists. |
 | `/api/system-families/:id` | DELETE | admin | Delete a family. 409 if in use unless `?force=true`. |
-| `/api/parent-systems` | GET | any | `{"parent_systems": [{id, name, is_default, sort_order}]}`. Empty by default (library-specific). |
+| `/api/parent-systems` | GET | any (not guest) | `{"parent_systems": [{id, name, is_default, sort_order}]}`. Empty by default (library-specific). |
 | `/api/parent-systems` | POST | admin | Create a parent system. Body `{name}`. 409 if the name exists. |
 | `/api/parent-systems/:id` | DELETE | admin | Delete a parent system. 409 if in use unless `?force=true`. |
-| `/api/licenses` | GET | any | `{"licenses": [{id, name, is_default, sort_order}]}`. Seeded with common TTRPG licenses (OGL, ORC, CC-BY, Proprietary, …). |
+| `/api/licenses` | GET | any (not guest) | `{"licenses": [{id, name, is_default, sort_order}]}`. Seeded with common TTRPG licenses (OGL, ORC, CC-BY, Proprietary, …). |
 | `/api/licenses` | POST | admin | Create a license. Body `{name}`. 409 if the name exists. |
 | `/api/licenses/:id` | DELETE | admin | Delete a license. 409 if used by a system or book unless `?force=true`. |
-| `/api/dice-materials` | GET | any | `{"dice_materials": [{id, name, group, is_default, sort_order}]}`. `group` is one of `Dice`\|`Cards`\|`Other`\|`Custom`. Sources the editor's dice/materials picker options. |
+| `/api/dice-materials` | GET | any (not guest) | `{"dice_materials": [{id, name, group, is_default, sort_order}]}`. `group` is one of `Dice`\|`Cards`\|`Other`\|`Custom`. Sources the editor's dice/materials picker options. |
 | `/api/dice-materials` | POST | admin | Create a dice/material. Body `{name, group?}` (defaults to `Custom`). 409 if the name exists. The editor picker best-effort POSTs here (as group `Custom`) when an admin types a new value, so it becomes reusable. |
 | `/api/dice-materials/:id` | DELETE | admin | Delete a dice/material. 409 if in use unless `?force=true`. |
 
@@ -641,7 +657,8 @@ books-only and are not indexed here.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/maps` | GET | any | Paginated map list (items include `is_archive`). Query: `limit`, `offset`, `map_type`, `folder` (exact folder path; `""` for top level), `sort` (`path` default, or `name`) |
+| `/api/maps` | GET | any | Paginated map list (items include `is_archive`). Query: `limit`, `offset`, `map_type`, and the [browse parameters](#browsing-the-media-collections) |
+| `/api/maps/groups` | GET | any (not guest) | Folders holding matching maps, with counts. Query: `map_type` and the browse filters |
 | `/api/maps/:id` | GET | any | Map detail: filename, tags, `map_type`, `grid_size`, `file_size`, `has_thumbnail`, `is_archive`, `is_pdf`, `page_count` (PDF maps only; `null` otherwise) |
 **Changing a book's category moves its file.** The folder a book sits in is what
 the next rescan reads, so recording a new category without moving the file would
@@ -817,7 +834,8 @@ all is stored as `null`.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/tokens` | GET | any | Paginated token list (items include `is_archive`). Query: `limit`, `offset`, `tag`, `sort` (`path` default, or `name`) |
+| `/api/tokens` | GET | any | Paginated token list (items include `is_archive`). Query: `limit`, `offset`, and the [browse parameters](#browsing-the-media-collections) |
+| `/api/tokens/groups` | GET | any (not guest) | Folders holding matching tokens, with counts. Query: the browse filters |
 | `/api/tokens/:id` | GET | any | Token detail incl. `is_archive` (`pixel_width`/`pixel_height` are `null` for archives) |
 | `/api/tokens/:id` | PATCH | gm/admin | Update `description`, `tags`, `is_explicit` |
 | `/api/tokens/:id/file` | GET | any | Download the token image, or the archive (served with the archive's MIME type) |
@@ -880,7 +898,8 @@ Audio tracks behave like maps/tokens, with embedded metadata. Supported formats:
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/audio` | GET | any | Paginated audio list (collection key `audio`). Query: `limit`, `offset`. Items include `duration`, `title`, `artist`, `album`, `has_artwork`, `is_archive` |
+| `/api/audio` | GET | any | Paginated audio list (collection key `audio`). Query: `limit`, `offset`, and the [browse parameters](#browsing-the-media-collections) (`sort` also takes `title` and `duration`). Items include `duration`, `title`, `artist`, `album`, `has_artwork`, `is_archive` |
+| `/api/audio/groups` | GET | any (not guest) | Folders holding matching tracks, with counts. Query: the browse filters |
 | `/api/audio/:id` | GET | any | Track detail incl. `folder_path` and `folder_tags` |
 | `/api/audio/:id` | PATCH | gm/admin | Update `description`, `tags` |
 | `/api/audio/:id/file` | GET | any | Stream/download the audio file (supports HTTP range requests), or the archive (served with the archive's MIME type) |
@@ -910,7 +929,8 @@ unknown) so a UI badge cannot misreport an unclassified model.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/models` | GET | any | Paginated model list (collection key `models`). Query: `limit`, `offset`. Items include `triangle_count`, `is_presupported`, `is_unsupported`, `is_archive` |
+| `/api/models` | GET | any | Paginated model list (collection key `models`). Query: `limit`, `offset`, and the [browse parameters](#browsing-the-media-collections). Items include `triangle_count`, `is_presupported`, `is_unsupported`, `is_archive` |
+| `/api/models/groups` | GET | any (not guest) | Folders holding matching models, with counts. Query: the browse filters |
 | `/api/models/:id` | GET | any | Model detail incl. `folder_path`, `folder_tags`, `is_supported`, `viewer_loader`, `viewer_available`, `viewer_oversized` |
 | `/api/models/:id` | PATCH | gm/admin | Update `description`, `tags`, `is_explicit`, `is_supported` |
 | `/api/models/:id/file` | GET | any | Download the mesh file (served with the format's MIME type), or the archive |
@@ -932,22 +952,46 @@ anyway behind a warning that it may be slow or unresponsive; when it is `false`
 alongside a `false` `viewer_available`, no loader exists for the format and a
 download is the only option.
 
-**Page ordering on the media list routes:** `GET /api/maps` and `/api/tokens` take
-a `sort` of `path` (the default) or `name`; `/api/audio` and `/api/models` are
-always filename-ordered. The galleries load a library in pages and append each
-one as it lands, so a page has to arrive in the order the view displays it.
-Grouped by folder, that is path order - each page is then a contiguous run of
-folders. With grouping off the view is one flat list sorted by filename, and
-paging by path instead scatters every arriving page across the whole alphabet,
-inserting cards among the ones already on screen.
+#### Browsing the media collections
 
-**Access control on media by-id routes:** As with books, the library-browse list routes (`GET /api/maps`, `/api/tokens`, `/api/audio`, `/api/models` and their `*-folders`) are blocked for guests, but the by-id routes (`:id`, `:id/file`, `:id/thumbnail`, `:id/artwork`) are reachable by any authenticated user and enforce access themselves. A guest may only read a map/token/audio/model item **shared into a campaign they belong to** (via a `CampaignResource` whose visibility permits them); otherwise the route returns 403. An explicit token returns 403 for a non-guest who has `allow_explicit` disabled, on the file/thumbnail routes as well as `GET /api/tokens/:id`. An item deliberately shared into a guest's campaign is served regardless of its explicit flag.
+The map, token, audio and model galleries filter, sort and group on the server
+and fetch a page at a time (issue #221), so a library of a few hundred thousand
+files opens as quickly as a small one. Each list route and its `/groups`
+companion take the same filters, so a folder's count always matches what
+listing that folder returns:
+
+| Parameter | Meaning |
+|-----------|---------|
+| `q` | Search text: the name, the folder path, and the item's tags (its own and every folder's above it). Accepts the [search page's `field:value` prefixes](#field-scoped-search) - `tag:`, `title:`/`filename:`, and `artist:`/`album:` on audio. A book-only field (`author:`, `year:`...) matches nothing |
+| `tags` | The tag filter as JSON: a list of `{mode: "include"\|"exclude", tags: [...]}` groups - tags OR'd within a group, groups AND'd - or a flat list of tags that must all match. A folder's tags count for everything beneath it. `__grim:none__` / `__grim:any__` match items with no tags / at least one. Malformed JSON is a 400 |
+| `favorites` | `true` for the caller's favourites only |
+| `added_since` | Only items added at or after this ISO time; undated items never match |
+| `folder` | Only items directly in this folder, collection-relative (`""` for the collection root). Omit for the whole collection |
+| `sort` | `path` (folder order, the default), `name` (natural order: "Map 2" before "Map 10"), `size`, `added_at` (undated items last either way); audio also `title` and `duration`. Any other value is a 422 |
+| `order` | `asc` or `desc` |
+
+`GET /api/<collection>/groups` returns `{total, groups: [{path, count}]}`: every
+folder holding matching items, collection-relative (`""` for the root). The
+gallery draws its folders from this and opens each with the list route's
+`folder` parameter; ungrouped, it pages the flat list instead.
+
+#### Browsing a system's shelf
+
+`GET /api/systems/:id/books` and `/book-groups` take the shelf's filters:
+`q` (title, filename or product code, plus the `field:value` prefixes such as
+`author:`, `year:`, `tag:`, `code:`), `tags` (as above, matching the book's own
+tags), `favorites`, `added_since`, `explicit` (bool), `genre` (a genre or a
+presence sentinel) and `product_code` (a code prefix such as `PZO`, or a
+sentinel). Books the caller may not open are left out of pages and counts
+alike.
+
+**Access control on media by-id routes:** As with books, the library-browse list routes (`GET /api/maps`, `/api/tokens`, `/api/audio`, `/api/models` and their `*-folders`) are blocked for guests, but the by-id routes (`:id`, `:id/file`, `:id/thumbnail`, `:id/artwork`) are reachable by any authenticated user and enforce access themselves. A guest may only read a map/token/audio/model item **shared into a campaign they belong to** (via a `CampaignResource` whose visibility permits them); otherwise the route returns 403. The `variants` list on each detail route is trimmed for a guest to the variants shared with them. An explicit token returns 403 for a non-guest who has `allow_explicit` disabled, on the file/thumbnail routes as well as `GET /api/tokens/:id`. An item deliberately shared into a guest's campaign is served regardless of its explicit flag.
 
 ### Favorites
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/favorites` | GET | any | List current user's favorites with enriched detail |
+| `/api/favorites` | GET | any | List current user's favorites with enriched detail. For a guest, `items` holds only books and media shared into their campaign - favorites of anything else, and of systems and tags, are left out |
 | `/api/favorites` | POST | any | Add a favorite (idempotent). Body: `{item_type, item_id}` |
 | `/api/favorites/:type/:id` | DELETE | any | Remove a favorite (silent 204 if not found) |
 
@@ -966,9 +1010,10 @@ with `tags`); these endpoints manage the shared tag catalog and browse items by 
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/tags` | GET | any | List tags with usage `count` and `is_favorite` (for the current user). Query `in_use_by=system\|book\|map\|token\|audio` restricts to tags used on that resource type. Folder tags (from `tags.json`/folder tagging, including **book subcategory folders**) are merged in and counted by the items they cover |
+| `/api/tags` | GET | any (not guest) | List tags with usage `count` and `is_favorite` (for the current user). Query `in_use_by=system\|book\|map\|token\|audio` restricts to tags used on that resource type. Folder tags (from `tags.json`/folder tagging, including **book subcategory folders**) are merged in and counted by the items they cover |
 | `/api/tags` | POST | gm/admin | Create a tag up front (idempotent by internal key). Body: `{value, display?}`. A `value` containing `/` or `\` is refused with a 422 (see **Tag names** below) |
-| `/api/tags/:internal/items` | GET | any | Items carrying the tag: `items` (directly tagged, enriched like favorites) plus `folders` (folder-derived - each `{resource_type, path, items}` lists the whole folder's contents; book folders show only their subfolder path). Query `resource_type=` filters by type. Explicit items are hidden from users who can't see them |
+| `/api/tags/:internal/items` | GET | any (not guest) | A tag's summary plus one page of the items carrying it directly: `counts` (directly-tagged items per type), `total`, `items` (a page, in type order then name order, enriched like favorites), and `folders` - every folder carrying the tag as `{resource_type, path, key, count}` (book folders show only their subfolder path). Query: `resource_type` (one type's counts, folders and page), `limit` (default 100, max 500; `0` for the summary alone), `offset`. Counts and pages leave out explicit items for users who can't see them, and books or systems the caller may not open |
+| `/api/tags/:internal/folder-items` | GET | any (not guest) | A page of everything inside one tagged folder, in name order: `{total, items}`. Query: `resource_type`, `folder` (the group's `key`), `limit`, `offset`. 404 when that folder does not carry the tag |
 | `/api/tags/:internal` | PATCH | gm/admin | Rename a tag's display value; when the new display normalizes to a different key the internal is re-keyed too (merging into an existing tag on collision). Works for **folder-only** tags too (a tag that lives only in folder JSON is materialised into a catalog row so the rename persists - no 404). Body: `{display}`. A `display` containing `/` or `\` is refused with a 422 |
 | `/api/tags/:internal/merge` | POST | gm/admin | Merge this tag into another, re-pointing all links. Body: `{into}`. `into` is refused with a 422 if it contains `/` or `\`; the **source** `:internal` may contain one, so merging is a way out of such a tag |
 | `/api/tags/:internal` | DELETE | gm/admin | Delete a tag and unlink it from every resource |
@@ -1186,7 +1231,7 @@ without risking markup injection.
 |----------|--------|------|-------------|
 | `/api/campaigns` | GET | any | List own + invited campaigns (admins see only their own here). Each item includes `has_banner`, `next_session` (next scheduled date or null), `last_accessed_at`, `is_archived`, and `archived_at`. Archived campaigns are omitted unless `?include_archived=true`, which returns archived campaigns *alongside* active ones (not archived-only). |
 | `/api/campaigns` | POST | any (gm/admin for `is_gm_campaign: true`) | Create campaign. Body: `{name, description?, is_gm_campaign?, gm_title?, system_id?, system_name?, parent_campaign_id?, resources?}`. `description` accepts markdown. `system_name` is free text for a system not in the library (ignored when `system_id` is set). `resources` is an explicit list of `{resource_type, resource_id, visibility?, shared_user_ids?}` to link - omit it (or send `[]`) to link nothing. No resources are auto-added. Returns 403 if the user's `campaign_access` is disabled. |
-| `/api/campaigns/:id` | GET | owner or member | Campaign detail with members and resources. The `resources` array is filtered by the caller's visibility (same rule as `GET /api/campaigns/:id/resources`): members never receive `gm`-only or unshared-`private` resource ids. Includes `has_banner`, `is_archived`, `archived_at`, and `locked` (`true` when the campaign is archived **or** the owner's `campaign_access` is disabled - the campaign is then read-only for everyone, write endpoints return 409 for archived / 403 for disabled access, and members keep read access) plus `owner_has_campaign_access` (which stays `true` for a merely-archived campaign, so the two causes are distinguishable). Each member includes `id`, `has_art`, `has_sheet`, `character_sheet_filename`, and `campaign_access` (false → flagged as a disabled user). Opening this endpoint records `last_accessed_at` (drives recently-accessed sorting on the campaigns list). |
+| `/api/campaigns/:id` | GET | owner or member | Campaign detail with members and resources. The `resources` array is filtered by the caller's visibility (same rule as `GET /api/campaigns/:id/resources`): members never receive `gm`-only or unshared-`private` resource ids. Includes `has_banner`, `is_archived`, `archived_at`, and `locked` (`true` when the campaign is archived **or** the owner's `campaign_access` is disabled - the campaign is then read-only for everyone, write endpoints return 409 for archived / 403 for disabled access, and members keep read access) plus `owner_has_campaign_access` (which stays `true` for a merely-archived campaign, so the two causes are distinguishable). Each member includes `id`, `has_art`, `has_sheet`, `character_sheet_filename`, and `campaign_access` (false → flagged as a disabled user). A guest member's `guest_code` is returned to the owner only; everyone else gets `null`. Opening this endpoint records `last_accessed_at` (drives recently-accessed sorting on the campaigns list). |
 | `/api/campaigns/:id` | PATCH | owner | Update `name`, `description` (markdown), `gm_title`, `system_id`, `system_name`, `parent_campaign_id`. Setting `system_id` clears `system_name` and vice-versa (`system_name: ""` clears it). |
 | `/api/campaigns/:id` | DELETE | owner | Delete campaign and all related data. Admins delete via the database directly. |
 | `/api/campaigns/:id/convert-to-group` | POST | owner (gm/admin) | Promote a personal campaign to a GM-run group campaign, unlocking members, guests, and the schedule. Body: `{gm_title?}` (blank/omitted keeps the current title). Nothing is migrated - the campaign's existing resources, wiki, and sessions carry over untouched and the member list starts empty. **One-way**: there is no group → personal route. Returns 409 if the campaign is already a group campaign, 403 if the caller is not a gm/admin. |
@@ -1270,7 +1315,7 @@ The GET (serving) endpoints for banners, art, sheets, and campaign files (`/file
 | `/api/campaigns/:id/members/:member_id/sheet` | GET | member or owner | Download character sheet (original filename) |
 | `/api/campaigns/:id/members/:member_id/sheet` | DELETE | member (own) or owner | Remove character sheet |
 | `/api/campaigns/:id/members/:member_id/sheet/duplicate` | POST | member (own) or owner | Copy a blank PDF into the member's sheet (body `{ source_type: "book"\|"file", source_id }`) |
-| `/api/campaigns/:id/sheet-sources` | GET | member or owner | List duplicatable blank sheets (`{ books, files }`): library `character-sheet` PDFs (filtered to the campaign's system when set) and campaign PDF files |
+| `/api/campaigns/:id/sheet-sources` | GET | member or owner | List duplicatable blank sheets (`{ books, files }`): library `character-sheet` PDFs (filtered to the campaign's system when set, and to books the caller may read - a guest sees only books shared into the campaign) and campaign PDF files whose resource the caller can see. `sheet/duplicate` accepts only a source this list offers the caller, else 404 |
 
 A member's **token** is stored separately from their **art** rather than reusing the same
 column: the art is a portrait for the campaign page, the token is the cropped disc that goes
@@ -1721,6 +1766,592 @@ placed there by hand works without any UI step. Config and install state ride in
 the generic `app_settings` table under `addons.*` keys, so this feature adds no
 schema.
 
+### Characters
+
+Character sheets and the schemas that describe them, both stored **per user**.
+A schema is a JSON document defining a sheet's fields, computed values, and
+layout; a character is one set of answers to it. Grimoire core renders any
+schema without game-specific code.
+
+Like themes, and unlike add-ons, these are per-account: installing a sheet
+cannot affect anyone else, so any authenticated user may install one and there
+is no admin approval. Guests included - a guest account exists to play in one
+campaign, which is exactly who wants a character sheet.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/characters/schemas` | GET | user | The user's installed schemas, each with a `character_count` |
+| `/api/characters/schemas` | POST | user | Install a pasted sheet (see below). 400 with a message naming the problem if it does not validate |
+| `/api/characters/schemas/browse` | GET | user | The community catalogue of sheets, each marked `installed` |
+| `/api/characters/schemas/install/:sheet_id` | POST | user | Install one sheet from the catalogue |
+| `/api/characters/schemas/:schema_id` | GET | user | One schema with its validated `document` |
+| `/api/characters/schemas/:schema_id` | DELETE | user | Uninstall a schema. Characters built on it are **kept** |
+| `/api/characters` | GET | user | The user's characters plus their parties', newest first. `?schema_ref=` filters by schema, `?campaign_id=` by campaign |
+| `/api/characters` | POST | user | Create a character. Body is `{schema_ref, name?, data?, campaign_id?}`. 400 if that schema is not installed, 403 if the campaign is not one you own or have joined |
+| `/api/characters/:id` | GET | user | One character with its `data` and freshly evaluated `computed` |
+| `/api/characters/:id` | PUT | user | Update `name`, `data`, `unset`, `campaign_id` and/or `status`. `data` is a **partial patch** - only the fields it names are touched. See below for the reserved keys |
+| `/api/characters/:id` | DELETE | user | Delete a character |
+| `/api/characters/import` | POST | user | Rebuild a character from an exported file |
+| `/api/characters/:id/export` | GET | user | Export a character as a self-contained file |
+| `/api/characters/:id/portrait` | POST | user | Set a portrait (PNG/JPEG/WebP/GIF, 5 MB) |
+| `/api/characters/:id/portrait` | GET | user | The portrait image |
+| `/api/characters/:id/portrait` | DELETE | user | Remove the portrait |
+
+**Installing a pasted sheet** takes the sheet either already parsed, as
+`document`, or as text:
+
+```json
+{ "text": "id: cairn\nname: Cairn\nfields: {...}",
+  "layout": "<div class=\"sheet\">...</div>",
+  "styles": ".sheet { display: grid; }" }
+```
+
+`text` is parsed as **JSON and then as YAML**, the same rule add-on indexes
+follow. YAML is the friendlier of the two for a hand-written sheet: no quoting
+every key, no trailing-comma errors, and comments are allowed.
+
+`layout` and `styles` carry a custom sheet's HTML and CSS as their own fields
+rather than escaped into the document, which is how the community repository
+keeps them too. Given here they **override** whatever the document holds, and
+`layout_file`/`styles_file` pointers are dropped — what gets stored is one
+self-contained document, so the sheet still renders if its catalogue moves.
+
+A pasted layout goes through the same tag allowlist as a downloaded one, and a
+pasted stylesheet through the same property filter. Pasting is not a way around
+either.
+
+**Updating a character.** `data` is merged into what is stored; a value the
+schema does not declare is dropped rather than stored. `unset` is a list of
+field names to remove, which is how a field goes back to its `default_from`
+value after the player typed over it - separate from `data`, because a `null`
+there already means "cleared" mid-edit.
+
+Two reserved keys may ride in `data` beside the fields, each checked strictly
+rather than stored as sent:
+
+| Key | Shape | Purpose |
+|---|---|---|
+| `_overrides` | `{computed name: value}` | The player's own value for a computed value. It replaces the formula, and everything depending on it follows. Names must be computed values; values must be short scalars. Sent whole - leaving a name out resets it |
+| `_granted` | `{picking field: {target field: [value, ...]}}` | What each `on_pick` rule added, so changing the pick can take it back off. The source must carry `on_pick` and each target must be a declared field |
+
+**Schema fields:** `id`, `schema_id`, `name`, `system`, `description`,
+`version`, `source_id`, `source_url`, `source_version`, `is_community`,
+`character_count`, and on detail `document`.
+
+**Character fields:** `id`, `name`, `schema_ref`, `schema_name`, `system`,
+`schema_missing`, `campaign_id`, `campaign_name`, `status`, `portrait_path`,
+`portrait_version`, `owned`, `created_at`, `updated_at`, and on detail `data`,
+`computed`, `validators`, and `entries`.
+
+`status` is `active` (the default), `retired` or `dead`. A player may have any
+number of characters in one campaign; when one falls they mark it rather than
+delete it, and roll the next. Any other value is a 400. `campaign_name` is the
+campaign's name, or `null` without one.
+
+`portrait_version` changes whenever the portrait does (it is `null` without
+one), and the portrait upload returns it too. Pass it as `?v=` on the portrait's
+URL: the image is cached for five minutes, so the same URL would keep serving
+the old art after a replacement.
+
+#### Campaign scoping
+
+Setting `campaign_id` puts a character on a table, and every member of that
+campaign can then **read** the sheet — which is the point, since a GM should be
+able to see what their players are playing. Writing stays with the owner:
+`owned` is false when you are reading someone else's, and edits, deletes and
+portrait changes answer 404. `campaign_id: ""` takes a character back out.
+
+"At the table" means the campaign's **owner** or an **accepted** member. That
+covers a GM campaign (the GM reads every player's sheet), a player's personal
+campaign (which has no members at all), and a campaign you joined. A character
+may only be placed in such a campaign - 403 otherwise, including for one you
+have been invited to but not yet joined. Campaign rulesets are readable by the
+same people.
+
+A character with no campaign stays private to its owner. `GET /api/characters`
+returns your own plus your parties', and `?campaign_id=` narrows it to one
+table's roster.
+
+#### Export and import
+
+Export is **denormalised**: every reference is resolved and the entry's full
+data embedded, and the schema travels with the file. That is the portability
+guarantee — a character shared with someone whose instance has neither the pack
+nor the ruleset still opens and still computes correctly.
+
+```json
+{ "$schema": "grimoire://character/v1",
+  "name": "Vex", "status": "active", "schema_id": "dnd-5e",
+  "schema": { "...the whole sheet definition..." },
+  "data": { "spells": [ { "_ref": "my-spell" } ] },
+  "entries": { "my-spell": { "content_type": "spell", "source": "ruleset",
+                             "name": "My Spell", "data": { "level": 4 } } } }
+```
+
+Importing installs the schema if the importer does not have it, and recreates
+embedded entries in a ruleset named after the import — but **only what is
+missing**. An entry this instance already has, in a pack or in any ruleset the
+importer can read, wins over the embedded copy, so an erratum applied locally
+reaches an imported character. The new ruleset is **personal** - only the
+importer can read or edit it - so importing a character never publishes its
+content to anyone else. The character still reads correctly for a party it
+later joins, because a sheet resolves entries against its owner's content. Pass `import_entries: false` to skip that and
+let the references read as missing instead. The file's `status` is kept if it
+is one this instance knows, and read as `active` otherwise.
+
+Anyone who may read a character may export it, so a GM can archive a party
+member's sheet.
+
+**Computed values are never stored.** They are evaluated from `data` on every
+read, so correcting a formula in a schema immediately fixes every character
+built on it rather than leaving stale numbers behind.
+
+**Submitted values are coerced to their declared type** and anything the schema
+does not declare is dropped. Out-of-range numbers are clamped rather than
+rejected, because refusing to save a whole character over one out-of-range score
+would lose the player's work.
+
+**A character outlives its schema.** `schema_ref` is a soft reference by
+`schema_id`, not a foreign key, so uninstalling a sheet leaves its characters
+readable: they come back with `schema_missing: true`, an empty `computed`, and
+their stored `data` intact. Reinstalling the schema restores the full sheet.
+
+#### The sheet catalogue
+
+Browsing and installing need only an account — a sheet lives in one user's
+account and changes nothing for anyone else, so there is no admin step, exactly
+as with themes.
+
+The catalogue URL is **derived from the add-on index** the admin already
+configured rather than being a second setting. `.../main/index.json` and
+`.../main/themes/index.json` both resolve to
+`.../main/character-sheets/index.json`, so pointing the server at a branch
+points every catalogue at it — themes, note templates and sheets together.
+
+**Several sources** are supported, as for add-ons and themes: the add-on index
+setting takes a comma-separated list, and every entry is consulted. Because two
+catalogues may each offer a sheet with the same id, a listed `id` is
+**namespaced by its source** (`cairn-a1b2c3d4`) while `raw_id` is what the sheet
+calls itself. Install by the namespaced id to choose a particular source's copy;
+a bare id still works and resolves to the first source offering it.
+
+`installed` is matched on the source as well as the id, so installing one
+catalogue's `cairn` does not mark another's. A schema pasted in by hand has no
+recorded source and therefore marks every copy of its id, since installing any
+of them would replace it.
+
+`sources` lists every catalogue consulted and `errors` the ones that could not
+be read — reported rather than dropped, because with several configured a
+missing source otherwise just looks like a smaller catalogue.
+
+**Catalogue entry fields:** `id`, `name`, `version`, `system`, `description`,
+`author`, `author_url`, `homepage`, `license`, `license_url`, `attribution`,
+`custom_layout`, `field_count`, `grimoire_min_version`, `path`, `sha256`,
+`index_url`, `installed`. The attribution is carried in the listing so it can
+be read **before** installing, and is rendered verbatim.
+
+A downloaded sheet is verified against the catalogue's SHA-256 and pinned to
+the catalogue's host: a catalogue may say where its files are, but not send the
+server somewhere else. It is then validated by the same schema validator a
+pasted sheet goes through, so a sheet that does not validate is refused rather
+than stored. Nothing in a sheet executes.
+
+A source that cannot be read is skipped rather than failing the whole browse —
+one unreachable branch should not hide the sheets that are fine. Browsing
+answers 403 when `DISABLE_EXTERNAL_ADD_ON_INSTALL` is set, and 502 when the
+catalogue is unreachable.
+
+#### Schema documents
+
+```json
+{
+  "id": "dnd-5e",
+  "name": "D&D 5e",
+  "version": "1.0.0",
+  "fields": { "strength": { "type": "number", "label": "Strength", "min": 1, "max": 20 } },
+  "computed": { "str_mod": { "formula": "floor((strength - 10) / 2)", "label": "STR Mod" } },
+  "layout": [{ "title": "Abilities", "fields": ["strength", "str_mod"] }]
+}
+```
+
+Field types are `text`, `number`, `textarea`, `checkbox`, `select`,
+`multiselect`, and `list`. Formulas are a small arithmetic/comparison/logic
+language with a closed function table (`floor`, `ceil`, `round`, `abs`, `min`,
+`max`, `sum`, `len`, `if`, `clamp`, `signed`, plus the list functions below).
+They are **parsed, never executed** - there is no `eval` anywhere in the engine
+- and a formula referencing an unknown name is rejected at install rather than
+failing at render.
+
+#### List fields
+
+A `list` is a repeatable table - equipment, attacks, spell slots. Each column is
+itself a field definition, so a column may be any scalar type (`text`, `number`,
+`checkbox`, `select`, `textarea`) but **not** another list:
+
+```json
+{
+  "equipment": {
+    "type": "list", "label": "Equipment",
+    "columns": [
+      { "key": "name", "type": "text", "label": "Name", "flex": 3 },
+      { "key": "qty", "type": "number", "label": "Qty", "default": 1 },
+      { "key": "equipped", "type": "checkbox", "label": "Eq." }
+    ]
+  }
+}
+```
+
+Every row is rebuilt from the declared columns on save, so a key the schema does
+not define is dropped - the same rule top-level fields follow. A missing cell
+falls back to its column's `default`. A list is capped at 500 rows.
+
+Five functions read across rows, taking the **column name as a string** (a bare
+name would resolve against the character before the function saw it):
+
+| Function | Returns |
+|---|---|
+| `count_where(list, 'col')` | How many rows have that column truthy (or equal to a third argument) |
+| `sum_where(list, 'col')` | Total of that column, optionally filtered: `sum_where(kit, 'qty', 'equipped', true)` |
+| `sum_qty(list, 'col')` | Total of that column times each row's `qty` (or a named third column): `sum_qty(gear, 'mass')`. A blank quantity counts once. Also reads a catalog list, with each entry's per-entry quantity |
+| `any_where(list, 'col')` | Whether any row matches |
+| `column(list, 'col')` | Every value of one column, for `sum()`/`min()`/`max()` |
+| `contains(value, x)` | Whether a multiselect holds `x`, or text contains it |
+
+#### Conditional fields - `visible_if`
+
+A field, or a whole `layout` section, may carry a `visible_if` expression and is
+drawn only when it is true. In an HTML layout it is an attribute on `g-field`,
+`g-computed` or `g-section`, alongside the existing `<g-if test="...">`:
+
+```json
+{ "spell_dc": { "type": "number", "label": "Spell DC", "visible_if": "is_caster" } }
+```
+
+A condition that cannot be evaluated **shows** the field. Hiding part of a sheet
+over a broken expression would cost the player access to their own data.
+
+#### Validators
+
+A schema may declare rules that check a character. A rule states what *should*
+be true, so a false result is what gets reported:
+
+```json
+{
+  "validators": [
+    { "rule": "count_where(equipment, 'equipped') <= 2",
+      "severity": "warning",
+      "message": "More equipped than you can carry" }
+  ]
+}
+```
+
+`severity` is `warning` or `error`; `message` is required, because a rule that
+fires without saying why is not actionable. Rules may read fields and computed
+values alike, and are rejected at install if they do not parse or name something
+that does not exist.
+
+Results come back on `GET`/`POST`/`PUT` of a character as `validators[]`, each
+`{rule, message, severity, field}`. **They never block saving.** A sheet
+mid-edit is routinely invalid - you pick the spells before you raise the level
+that allows them - and refusing the write would lose the player's work.
+
+**HTML layouts.** A schema may replace the JSON `layout` with `layout_html`, an
+HTML *template*, plus an optional `styles` block. A catalogue sheet should keep
+both in sibling `.html` and `.css` files instead — HTML escaped into a JSON
+string is unreadable — and the catalogue then carries `layout_path`,
+`layout_sha256`, `styles_path` and `styles_sha256`. Each file is downloaded and
+digest-checked separately, then folded into one self-contained document, so the
+stored sheet does not depend on the catalogue still being there. Both are validated at install
+and returned as derived `layout_ast` / `styles_css`:
+
+```html
+<div class="sheet">
+  <g-section title="Abilities">
+    <g-field name="strength" /><g-computed name="str_mod" />
+  </g-section>
+  <g-if test="level > 4"><g-field name="feat" /></g-if>
+</div>
+```
+
+Directives are `g-field`, `g-computed`, `g-label`, `g-value`, `g-section`,
+`g-if`, and `g-repeat`. Inside a `g-repeat` over a list field, a `g-field`
+naming one of that list's columns addresses **that row's** cell, so a custom
+layout can draw an editable table of its own. Everything else is a closed allowlist of structural
+tags. **The template never becomes markup**: it is parsed to an AST server-side
+and rendered as React elements, so no schema string ever reaches `innerHTML`.
+Event handlers, `<script>`, `<style>`, `<iframe>`, `<input>` and friends, and
+any `href`/`src` that is not relative or https are rejected at install time.
+Schema CSS is scope-prefixed to the sheet and filtered against a property
+allowlist, so a hostile schema cannot restyle the app around it. The worst one
+can do is look wrong.
+
+### Content catalog
+
+A **content pack** is a directory of typed entries - spells, classes, feats,
+kits - for one game system. A character references an entry rather than copying
+it, so an erratum or a ruleset edit reaches every character built on it.
+
+Packs are **server-wide**: installed once into `DATA_PATH/character-content/`,
+loaded on startup and rescan, and shared read-only. Schemas stay per user, so
+the catalog is *content everyone has, described by the caller's own copy of the
+sheet* - two people may have different versions of a schema installed, and each
+browses the content types their copy declares.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/content/packs` | GET | user | Installed packs with their licence and credit. `?schema_id=` filters |
+| `/api/content/packs/reload` | POST | **admin** | Re-read every pack from disk |
+| `/api/content/:schema_id/types` | GET | user | The content types this user's schema declares, each with an entry count |
+| `/api/content/:schema_id/:content_type` | GET | user | Browse: `search`, `filter[field]=value`, `sort`, `page`, `page_size` |
+| `/api/content/:schema_id/:content_type/:entry_id` | GET | user | One entry in full |
+| `/api/content/:schema_id/resolve?ids=a,b,c` | GET | user | Resolve many references at once, for rendering a sheet |
+
+**Browse response:** `entries[]`, `total`, `page`, `page_size`, and
+`filters_available` - facets built from the content type's `filter_fields`, each
+value with the number of entries carrying it. Facets describe the **whole**
+catalog rather than the current page, so choosing one value does not empty every
+other facet and leave no way back. Numeric facet values sort numerically, so a
+spell-level filter reads 1, 2, 3, 10 rather than 1, 10, 2, 3.
+
+Search is FTS5 over each type's `search_fields`, prefix-matched per term. A
+query is reduced to bare words first, so an unbalanced quote or a stray operator
+cannot raise.
+
+**Resolve** marks an id no installed pack provides as `missing` rather than
+omitting it, so a sheet can say "this entry is not installed" instead of
+silently dropping something the player chose.
+
+#### `content_types`
+
+A content type is a field schema applied to catalog entries rather than to a
+character, so its `fields` are validated exactly as a sheet's are and render
+through the same `FieldRenderer`:
+
+```json
+{
+  "content_types": {
+    "spell": {
+      "label": "Spell", "label_plural": "Spells",
+      "identity_field": "name",
+      "sort_default": ["level", "name"],
+      "search_fields": ["name", "school", "description"],
+      "filter_fields": ["level", "school"],
+      "compact_display": "{name} — {school} {level}",
+      "fields": { "name": { "type": "text" }, "level": { "type": "number" } }
+    }
+  }
+}
+```
+
+`identity_field` is the entry's name - what a reference displays and what the
+catalog sorts by. The three field-name lists and every `{token}` in
+`compact_display` are checked against the type's own fields at install, so a
+typo fails loudly rather than producing an empty filter sidebar.
+
+#### `content_ref` and `content_list`
+
+Two field types pick from the catalog. `content_ref` takes one entry (a class, a
+kit); `content_list` takes many (spells known, feats). Both name the
+`content_type` they draw from, which must be one the schema declares.
+
+```json
+{
+  "spells": {
+    "type": "content_list", "content_type": "spell",
+    "allow_freeform": true,
+    "per_entry_fields": { "prepared": { "type": "checkbox" } }
+  }
+}
+```
+
+`per_entry_fields` are the **character's own** notes on an entry - prepared,
+equipped, uses remaining. They are ordinary field definitions, validated and
+coerced like any other.
+
+**Stored shape.** A reference, never a copy:
+
+```json
+{ "signature": { "_ref": "fireball", "_source": "srd" },
+  "spells": [
+    { "_ref": "fireball", "_source": "srd", "_per": { "prepared": true } },
+    { "_inline": true, "name": "A spell I made up" }
+  ] }
+```
+
+`_source` records which pack an entry came from, because two packs for one
+system may each define `fireball`. `_inline` is the freeform escape hatch that
+keeps the catalog optional: with `allow_freeform`, a player can type an entry
+instead of picking one, and never open the browser at all. A freeform entry keeps
+the properties its content type declares - a homebrew spell's level and
+description - coerced to their types; anything undeclared is dropped.
+
+A character detail response carries `entries` - the catalog entries its
+references point at, resolved in one query - so rendering the sheet costs no
+extra request. A reference whose entry is not installed is **kept**: the pack
+may come back, and erasing the player's choice would be worse than showing an id.
+
+#### Catalog functions
+
+Four more expression functions read referenced entries. The resolved table is
+supplied behind the scenes, so an author never writes it:
+
+| Function | Returns |
+|---|---|
+| `ref(field, 'prop')` | One property of a single reference |
+| `sum_refs(list, 'prop')` | That property totalled across every referenced entry |
+| `has_ref(list, 'entry-id')` | Whether the list holds that entry |
+| `count_refs(list)` / `count_refs(list, 'prop', value)` | How many references there are, or how many match |
+
+The character's `_per` notes are layered over the catalog entry - and over a
+freeform entry's own values - so `count_refs(spells, 'prepared')` reads what the
+player set. Before the catalog
+has resolved, these return 0 rather than failing - a sheet renders while its
+entries are still loading.
+
+#### Pack layout
+
+```
+DATA_PATH/character-content/dnd-5e-srd/
+├── _meta.json     ← pack_id, schema_id, licence, source
+├── spell.json     ← an array of entries, named after the content type
+└── class.json
+```
+
+Every entry needs an `_id`; `_source` defaults to the pack's. A pack that sets a
+`license` **must** carry an `attribution`, which Grimoire renders verbatim -
+several open licences mandate exact wording. Loading a pack replaces its entries
+wholesale, so the directory is always the source of truth, and a pack whose
+directory disappears loses its rows on the next scan.
+
+A pack may be installed before anyone has installed the matching sheet; its
+entries are stored as authored until a schema describes them, so install order
+does not matter.
+
+### Rulesets
+
+A **ruleset** is a named set of catalog entries — an SRD, a supplement, a
+table's house rules. Same data shape as pack content, validated against the same
+content type and rendered by the same component. What differs is that a ruleset
+is **editable** and **scoped**, where pack content is neither. Editing an SRD
+entry means **forking** it into a ruleset.
+
+Scope is the point. Two games can run the same system and allow different
+content, which is not something a per-user model can express:
+
+| Kind | `campaign_id` | Who reads it | Who edits it |
+|---|---|---|---|
+| **Campaign** | the campaign | everyone at that table: the campaign's owner and its accepted members | the campaign owner, and admins |
+| **Personal** | null (with an owner) | its owner only | its owner only - not even admins |
+| **Server** | null | everyone on the instance | admins |
+
+A campaign ruleset is deleted with its campaign — the content existed to serve
+that table. Creating a server ruleset requires admin; creating a campaign one
+requires owning the campaign. A personal ruleset is not created through this
+endpoint: importing a character makes one, to hold the content embedded in the
+file. It is deleted with its owner's account, and moves with it when a guest is
+merged into another account.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/rulesets` | GET | user | Rulesets this user can read. `schema_id`, `campaign_id` filter |
+| `/api/rulesets` | POST | user | Create one. `campaign_id` null asks for a server ruleset (**admin**) |
+| `/api/rulesets/packs/browse` | GET | user | The community catalogue of content packs, each with `installed`, `installed_version` and `update_available`. Also returns `can_install` for this caller |
+| `/api/rulesets/packs/install/:pack_id` | POST | **admin** | Download and install one pack, then load it into the catalog. Replaces an installed copy, which is how a pack is reinstalled or updated |
+| `/api/rulesets/packs/:pack_id` | DELETE | **admin** | Uninstall a pack: its directory and its rows. Rulesets that imported it keep their copies |
+| `/api/rulesets/installable` | GET | user | Installed content packs that can be imported into a ruleset |
+| `/api/rulesets/:id` | GET | user | One ruleset, if they may read it |
+| `/api/rulesets/:id` | PUT | editor | Rename it or change its credit |
+| `/api/rulesets/:id` | DELETE | editor | Delete it and its entries |
+| `/api/rulesets/:id/export` | GET | user | The whole ruleset as a portable document |
+| `/api/rulesets/:id/import` | POST | editor | Import a `pack_id`, a `document`, or that document as `text` (JSON or YAML). `conflict` is `skip` (default), `overwrite`, or `rename` |
+| `/api/rulesets/:id/fork` | POST | editor | Copy a catalogue or readable ruleset entry into this one |
+| `/api/rulesets/:id/entries` | GET | user | Its entries. `content_type` filters |
+| `/api/rulesets/:id/entries` | POST | editor | Write an entry |
+| `/api/rulesets/:id/entries/:entry_id` | GET | user | One entry, with its `data` |
+| `/api/rulesets/:id/entries/:entry_id` | PUT | editor | Edit an entry |
+| `/api/rulesets/:id/entries/:entry_id` | DELETE | editor | Delete an entry |
+
+"editor" above means whoever may edit that ruleset per the table: the campaign
+owner for a campaign ruleset, an admin for a server one. Everyone else gets 403.
+
+**Ruleset fields:** `id`, `schema_id`, `name`, `description`, `version`,
+`license`, `license_url`, `attribution`, `source_pack_id`, `campaign_id`,
+`campaign_name`, `personal`, `editable`, `entry_count`, `created_at`,
+`updated_at`.
+
+**Entry fields:** `id`, `ruleset_id`, `content_type`, `entry_id`, `name`,
+`forked_from`, `editable`, and on detail `data`.
+
+`editable` is computed per caller, so the UI can show a read-only view to a
+player at the table without a second request.
+
+#### Installing the SRD
+
+Core content reaches a table in two steps.
+
+First an admin installs the **pack**, either from the community catalogue
+(`GET /api/rulesets/packs/browse`, then `POST /api/rulesets/packs/install/:id`)
+or by dropping a directory into `DATA_PATH/character-content/`, which is loaded
+at startup. Installing from the catalogue writes the same directory, so the two
+routes converge - the filesystem stays the source of truth. Every file is
+verified against its own digest, and the whole pack is staged and swapped into
+place, so a failed download leaves the previous copy standing.
+
+Browsing needs only an account; **installing needs an admin**, because a pack is
+server-wide. `browse` returns `can_install` for the caller so a GM's UI can show
+what a pack offers without offering a button that would 403.
+
+Then `GET /api/rulesets/installable` lists what is installed, and a GM imports it
+into their campaign's ruleset with `POST /api/rulesets/:id/import` and
+`{"pack_id": "..."}`.
+
+An import **copies the pack's credit onto the ruleset** — `license`,
+`license_url`, `attribution` and `source_pack_id` — so content taken from the
+SRD stays attributed wherever it is shown. Importing a pack built for another
+system is refused (400), as is a `pack_id` that is not installed (404).
+
+#### Forking
+
+`POST /api/rulesets/:id/fork` copies one entry into a ruleset you can edit,
+appending ` (copy)` to its identity field and recording `forked_from` as
+`"<source>:<entry_id>"`. The source may be a pack entry or an entry in any
+ruleset the caller can read, so a table can take a server ruleset's spell and
+change it locally. Forking the same entry twice yields two distinct entry ids
+rather than a conflict.
+
+#### In the catalog
+
+Ruleset content is merged into catalog results and tagged, so "Fireball (SRD)"
+and "Fireball (House Rules)" are told apart: each row carries `ruleset`,
+`ruleset_id` and `ruleset_name`. Pass `include_rulesets=false` to browse pack
+content alone. Characters resolve ruleset references exactly as they resolve
+pack ones, so a formula reading a spell's level does not care where it came
+from.
+
+The FTS index covers pack content; ruleset content is matched in Python on the
+same terms, because it changes on every edit and the readable set is small.
+
+#### Deleting, and dangling references
+
+Deleting an entry leaves characters alone. A reference is soft, so the sheet
+shows it as missing rather than losing the row — the same behaviour as
+uninstalling a pack, and it means a delete can never destroy someone's
+character.
+
+#### Export format
+
+```json
+{ "$schema": "grimoire://ruleset/v1",
+  "name": "House Rules", "schema_id": "dnd-5e-2024", "version": "1.0.0",
+  "entries": { "spell": [ { "_id": "hellfire-blast", "name": "Hellfire Blast" } ] } }
+```
+
+The same shape a filesystem content pack uses, so an exported ruleset can become
+an installed pack. Import defaults to `skip` because an import should not
+silently overwrite someone's work, and returns a tally
+(`imported`/`skipped`/`renamed`/`overwritten`/`failed`) rather than stopping at
+the first conflict, so a partly-overlapping pack still imports what it can.
+
 ### Duplicates *(admin only)*
 
 Finding files that look like copies of one another, and deciding what to do
@@ -2104,8 +2735,10 @@ sidecars and marker files, so a client counting rows would disagree with the
 check the delete itself performs.
 
 **`POST /api/files/upload`** - multipart form: `file`, `destination`,
-`relative_dir` (optional), `on_conflict` (default `rename`). Returns
-`{path, name, size}`.
+`relative_dir` (optional), `on_conflict` (`rename` (default), `skip`, or
+`replace`). Returns `{path, name, size, record_id, replaced}`; `record_id` is
+`null` and `replaced` is `false` unless the upload replaced a book. Any other
+`on_conflict` value is a `400`.
 
 **One file per request, by design.** A batch endpoint would make a 200-file
 import succeed or fail as a unit, leaving no way to say which files landed or to
@@ -2126,11 +2759,47 @@ root are refused. The supplied filename is reduced to its final component, so a
 path smuggled through the multipart body cannot escape the destination, and
 hidden files are rejected outright - a dotfile upload could otherwise write a
 container marker and reclassify a shelf. Single files are capped at 8 GB
-(`413` past that), and an upload never overwrites: a name clash is suffixed.
+(`413` past that), and an upload never overwrites unless asked to with
+`on_conflict=replace`: by default a name clash is suffixed (`rename`), and
+`skip` refuses it with `409`.
 
 `relative_dir` carries the sub-path from a folder upload (the browser's
 `webkitRelativePath` minus the file name) so a dropped folder keeps its
 structure; it is validated against the library root like any other path.
+
+**Replacing a book's file (`on_conflict=replace`).** Overwrites the file of a
+book that is already indexed and keeps its record, so the same id keeps its tags,
+metadata edits, variant links, favorites, bookmarks, and campaign links. Use it
+for a corrected file: a better scan, a re-OCRed text layer, an errata printing.
+
+- The upload must land on the exact path of an indexed book under `books/`
+  (`destination` + `relative_dir` + the file's name). Anything else - a loose
+  file, a name with nothing there, a map or token - is refused with `409`, so a
+  mistyped name never adds a second copy instead. A `relative_dir` that does not
+  exist is a `404`.
+- Refused with `409` while a library scan, re-index, or OCR run is in progress.
+  The OCR worker resumes from a page checkpoint, and changing the file under it
+  would mix the two files' text.
+- The new bytes are written under a temporary name and swapped in with one
+  rename, so a failed or aborted upload leaves the original file intact.
+- Everything read from the old file is rebuilt, because the new one may differ by
+  a word or by every page. Before the response returns: the content hash, size,
+  and mtime, page count, and cover thumbnail are re-read, and the cached page
+  renders are dropped. Page URLs carry the content hash, so clients stop using
+  the old renders. A missing book is marked present again.
+- For a format with searchable text (PDF, EPUB, DjVu, `.txt`/`.md`/`.rtf`), the
+  old search rows and the OCR checkpoint are cleared and the text is re-read in
+  the background, as `POST /api/books/:id/rescan` does: from the text layer if
+  the new file has one, or queued for OCR if it is image-only. Progress shows on
+  `GET /api/scan-status`. If that background run cannot start, the next scan
+  indexes the book. The book's `ocr_dpi` override is kept.
+- Nothing you wrote is touched: title, description, authors, tags, and the rest
+  of the metadata stay as they are, and sidecar `.opf` metadata is not
+  re-applied. Bookmarks keep their page numbers, so a bookmark can point at a
+  different passage, or past the end, if the new file's pages shifted.
+- If the re-read fails, the response still reports the saved file. The next
+  scan sees the changed size and mtime and rebuilds the book, as it does for any
+  file replaced on disk.
 
 **`POST /api/files/folder/scaffold`** - `{path}`. Creates the standard category
 folders (`Core`, `Supplements`, `Adventures`, `Character Sheets`, `Maps`,
@@ -2151,7 +2820,7 @@ genuine gaps.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/downloads/archive` | GET | user | Stream a collection of files as one archive |
+| `/api/downloads/archive` | GET | any (not guest) | Stream a collection of files as one archive |
 
 **Query parameters:** `type` (required) selects the scope, `fmt` selects the
 format — `zip` (default), `tar`, `tar.gz`, `tar.bz2` — and the remaining

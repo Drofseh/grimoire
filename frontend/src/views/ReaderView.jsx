@@ -116,6 +116,12 @@ export default function ReaderView() {
     api.get(`/books/${bookId}`).then((b) => {
       setBook(b)
       setTotalPages(b.page_count || 0)
+      // The saved page can be past the end when the file was replaced by a
+      // shorter one (issue #497) - open on its last page instead of a blank one.
+      if (b.page_count > 0) {
+        setCurrentPage((p) => Math.min(p, b.page_count))
+        setPageInput((v) => (parseInt(v) > b.page_count ? String(b.page_count) : v))
+      }
       saveRecentBook(b)
     })
   }, [bookId])
@@ -460,8 +466,14 @@ export default function ReaderView() {
     return text || `${t('reader.page')} ${p} — ${book.title}`
   }
 
+  // `flex: 1` rather than `height: 100%`: `main` is a flex column that may also
+  // hold the pending-invites banner, and a 100%-tall reader under it overflows
+  // the bottom, hiding the foot of the page behind the mobile nav (issue #520).
   return (
-    <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div
+      className="fade-in"
+      style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+    >
       <ReaderToolbar
         book={book}
         bookId={bookId}

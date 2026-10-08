@@ -1,8 +1,9 @@
 """Downloads package — stream library content as zip / tar archives."""
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from ...auth import require_not_guest
 from ...config import LIBRARY_PATH
 
 # Package-level constant — tests patch this attribute and ``_safe_filepath``
@@ -13,6 +14,9 @@ from ._helpers import _safe_arcname  # noqa: E402  re-exported for tests
 from .core import download_archive  # noqa: E402
 
 router = APIRouter(prefix="/downloads", tags=["downloads"])
+# Archives are built from library folders, systems and tags, not from campaign
+# shares, so none of them is scoped to what a guest may read: guests are blocked
+# outright, as from the library list routes (issue #519).
 router.add_api_route(
     "/archive",
     download_archive,
@@ -27,6 +31,7 @@ router.add_api_route(
         "`tag_folder` (one tagged folder), or `library_folder` (admin-only; any "
         "folder as it sits on disk, indexed or not)."
     ),
+    dependencies=[Depends(require_not_guest)],
 )
 
 

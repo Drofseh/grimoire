@@ -487,6 +487,23 @@ describe('BookRow', () => {
     expect(screen.getByText('Errata')).toBeInTheDocument()
   })
 
+  // Issue #517 — tags were plain chips under the CardLink overlay, so a click
+  // opened the book instead of the tag.
+  it('links each list-row tag to the tags page, above the card overlay', () => {
+    render(<BookRow book={makeBook({ tags: ['game:aberrant'] })} />)
+    const tag = screen.getByRole('link', { name: 'Game:aberrant' })
+    expect(tag).toHaveAttribute('href', '/tags?tag=game%3Aaberrant')
+    expect(tag).toHaveStyle({ position: 'relative' })
+  })
+
+  it('keeps list-row tags as plain chips in bulk mode', () => {
+    const onToggle = vi.fn()
+    render(<BookRow book={makeBook({ tags: ['errata'] })} bulkMode onToggle={onToggle} />)
+    expect(screen.queryByRole('link', { name: 'Errata' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Errata'))
+    expect(onToggle).toHaveBeenCalled()
+  })
+
   it('shows the product code in the list layout', () => {
     render(<BookRow book={makeBook({ product_code: 'PZO9001' })} />)
     expect(screen.getByText('PZO9001')).toBeInTheDocument()
@@ -547,5 +564,27 @@ describe('BookRow', () => {
       render(<BookRow book={makeBook()} onDetails={() => {}} bulkMode onToggle={() => {}} />)
       expect(screen.queryByRole('button', { name: 'View details' })).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('BookRow — new badge (issue #199)', () => {
+  beforeEach(() => {
+    FavCtx.useFavorites.mockReturnValue({ isFavorite: () => false, toggleFavorite: vi.fn() })
+  })
+  const yesterday = () => new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+
+  it('marks a recently added book in the list layout, reading "New" on hover', () => {
+    render(<BookRow book={makeBook({ added_at: yesterday() })} />)
+    expect(screen.getByTestId('recently-added-badge')).toHaveAttribute('title', 'New')
+  })
+
+  it('marks a recently added book on a card', () => {
+    render(<BookRow book={makeBook({ added_at: yesterday() })} card />)
+    expect(screen.getByRole('img', { name: 'New' })).toBeInTheDocument()
+  })
+
+  it('shows no badge for a book that predates tracking', () => {
+    render(<BookRow book={makeBook({ added_at: null })} card />)
+    expect(screen.queryByTestId('recently-added-badge')).not.toBeInTheDocument()
   })
 })

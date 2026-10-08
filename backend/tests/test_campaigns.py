@@ -1665,6 +1665,18 @@ class TestCharacterSheetInApp:
         )
         assert up.status_code == 201, up.text
         file_id = up.json()["resource_id"]
+        # Uploads start GM-only; a member can only copy a file shared with them.
+        resp = client.post(
+            f"/api/campaigns/{c['id']}/members/{member_id}/sheet/duplicate",
+            json={"source_type": "file", "source_id": file_id},
+            headers=player_headers,
+        )
+        assert resp.status_code == 404
+        client.patch(
+            f"/api/campaigns/{c['id']}/resources/{up.json()['id']}",
+            json={"visibility": "public"},
+            headers=gm_headers,
+        )
 
         resp = client.post(
             f"/api/campaigns/{c['id']}/members/{member_id}/sheet/duplicate",
@@ -1703,9 +1715,15 @@ class TestCharacterSheetInApp:
         c, member_id = member
         sys = make_game_system()
         make_book(system_id=sys.id, category="character-sheet", title="A Blank Sheet")
-        client.post(
+        up = client.post(
             f"/api/campaigns/{c['id']}/files",
             files={"file": ("camp.pdf", b"%PDF-1.4 x", "application/pdf")},
+            headers=gm_headers,
+        )
+        # Uploads start GM-only; members see the file once it is shared.
+        client.patch(
+            f"/api/campaigns/{c['id']}/resources/{up.json()['id']}",
+            json={"visibility": "public"},
             headers=gm_headers,
         )
         resp = client.get(f"/api/campaigns/{c['id']}/sheet-sources", headers=player_headers)
